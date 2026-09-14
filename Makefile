@@ -10,10 +10,13 @@ TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
          u01_churn_bench u01_pager_test u01_fsync_bench \
          u01_scan_bench u01_torn_write_test \
          u02_btree_test u02_split_regression_test \
-         u02_search_bench u02_insert_bench
+         u02_search_bench u02_insert_bench \
+         u03_delete_test u03_scan_regression_test \
+         u03_range_bench u03_delete_bench
 
 BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
-        bin/u01_c12_smoke bin/u01_c14_smoke bin/u02_median_bug_demo
+        bin/u01_c12_smoke bin/u01_c14_smoke bin/u02_median_bug_demo \
+        bin/u03_merge_chain_bug_demo
 
 all: $(BINS)
 
@@ -26,9 +29,12 @@ bin/%: tests/%.cpp $(ENGINE) $(HDRS) | bin
 bin/u01_torn_write_demo: tools/u01_torn_write_demo.cpp | bin
 	$(CXX) $(CXXFLAGS) $< -o $@
 
-# Unit 2 forensic-trap demo: three Page objects in memory, no pager, so it
-# links nothing but needs the engine headers.
+# In-memory forensic-trap demos: node views over Page objects, no pager, so
+# they link nothing but need the engine headers.
 bin/u02_median_bug_demo: tools/u02_median_bug_demo.cpp $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
+
+bin/u03_merge_chain_bug_demo: tools/u03_merge_chain_bug_demo.cpp $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
 
 # Book snapshots: the intermediate Challenge 1.2 / 1.4 listings must also
@@ -42,7 +48,8 @@ bin/u01_c14_smoke: snapshots/c14_smoke.cpp snapshots/c14/pager.cpp snapshots/c14
 
 test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
       bin/u01_torn_write_test bin/u01_c12_smoke bin/u01_c14_smoke \
-      bin/u02_btree_test bin/u02_split_regression_test bin/u02_median_bug_demo
+      bin/u02_btree_test bin/u02_split_regression_test bin/u02_median_bug_demo \
+      bin/u03_delete_test bin/u03_scan_regression_test bin/u03_merge_chain_bug_demo
 	./bin/u01_page_layout_test
 	./bin/u01_slotted_test
 	./bin/u01_pager_test
@@ -52,15 +59,21 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
 	./bin/u02_btree_test
 	./bin/u02_split_regression_test
 	./bin/u02_median_bug_demo
+	./bin/u03_delete_test
+	./bin/u03_scan_regression_test
+	./bin/u03_merge_chain_bug_demo
 
 bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
-       bin/u01_scan_bench bin/u02_search_bench bin/u02_insert_bench
+       bin/u01_scan_bench bin/u02_search_bench bin/u02_insert_bench \
+       bin/u03_range_bench bin/u03_delete_bench
 	./bin/u01_header_bench
 	./bin/u01_churn_bench
 	./bin/u01_fsync_bench
 	./bin/u01_scan_bench
 	./bin/u02_search_bench
 	./bin/u02_insert_bench
+	./bin/u03_range_bench
+	./bin/u03_delete_bench
 
 clean:
 	rm -rf bin *.db *.bin *.img

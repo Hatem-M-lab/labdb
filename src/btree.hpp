@@ -33,6 +33,9 @@ using Value = std::uint64_t;
 inline constexpr std::size_t kLeafEntrySize = 16;  // 8 key + 8 value
 inline constexpr std::uint16_t kLeafMaxEntries =
     static_cast<std::uint16_t>((kPageSize - kPageHeaderSize) / kLeafEntrySize);
+// Minimum occupancy for deletion (Unit 3): every node but the root stays at
+// least half full, so a merge of two minimal nodes still fits in one page.
+inline constexpr std::uint16_t kLeafMinEntries = kLeafMaxEntries / 2;  // 127
 
 // ---- Internal layout ------------------------------------------------
 // Keys occupy a fixed-capacity region right after the header; the child
@@ -40,6 +43,7 @@ inline constexpr std::uint16_t kLeafMaxEntries =
 // shifts keys and children independently. slot_count = number of keys;
 // children = keys + 1.
 inline constexpr std::uint16_t kInternalMaxKeys = 339;  // see the derivation in 2.2
+inline constexpr std::uint16_t kInternalMinKeys = kInternalMaxKeys / 2;  // 169 (Unit 3)
 inline constexpr std::size_t kInternalKeyBase = kPageHeaderSize;
 inline constexpr std::size_t kInternalChildBase =
     kInternalKeyBase + std::size_t{kInternalMaxKeys} * 8;  // 2732
@@ -100,6 +104,24 @@ class LeafNode {
     std::memcpy(r.base(0), base(from), std::size_t{moved} * kLeafEntrySize);
     r.p_->set_slot_count(moved);
     p_->set_slot_count(from);
+  }
+
+  // --- deletion primitives (Unit 3) ---
+  bool is_underflow() const { return count() < kLeafMinEntries; }
+
+  // Remove entry i, shifting later entries left to close the gap.
+  void erase_at(std::uint16_t i) {
+    const std::uint16_t n = count();
+    std::memmove(base(i), base(static_cast<std::uint16_t>(i + 1)),
+                 static_cast<std::size_t>(n - i - 1) * kLeafEntrySize);
+    p_->set_slot_count(static_cast<std::uint16_t>(n - 1));
+  }
+
+  // Append all of r's entries after ours. Used by a merge (r is then freed).
+  void append_from(const LeafNode& r) {
+    const std::uint16_t n = count(), m = r.count();
+    std::memcpy(base(n), r.base(0), std::size_t{m} * kLeafEntrySize);
+    p_->set_slot_count(static_cast<std::uint16_t>(n + m));
   }
 
   std::uint8_t* base(std::uint16_t i) {
@@ -174,8 +196,82 @@ class InternalNode {
 
   void set_count(std::uint16_t n) { p_->set_slot_count(n); }
 
+  // --- deletion primitives (Unit 3) ---
+  bool is_underflow() const { return count() < kInternalMinKeys; }
+
+  // Remove separator key ki and its right child (child index ki+1),
+  // shifting the tails of both arrays left to close the gaps.
+  void erase_key_child_at(std::uint16_t ki) {
+    const std::uint16_t n = count();
+    for (std::uint16_t i = ki; i + 1 < n; ++i)
+      set_key_at(i, key_at(static_cast<std::uint16_t>(i + 1)));
+    for (std::uint16_t i = static_cast<std::uint16_t>(ki + 1); i < n; ++i)
+      set_child_at(i, child_at(static_cast<std::uint16_t>(i + 1)));
+    p_->set_slot_count(static_cast<std::uint16_t>(n - 1));
+  }
+
+  // Insert a new first key and first child (index 0), shifting right. Used
+  // when borrowing from the left sibling.
+  void prepend_child_key(Key k, PageId c) {
+    const std::uint16_t n = count();
+    for (std::uint16_t i = n; i > 0; --i)
+      set_key_at(i, key_at(static_cast<std::uint16_t>(i - 1)));
+    for (std::uint16_t i = static_cast<std::uint16_t>(n + 1); i > 0; --i)
+      set_child_at(i, child_at(static_cast<std::uint16_t>(i - 1)));
+    set_key_at(0, k);
+    set_child_at(0, c);
+    p_->set_slot_count(static_cast<std::uint16_t>(n + 1));
+  }
+
+  // Append a new last key and last child. Used when borrowing from the
+  // right sibling.
+  void append_child_key(Key k, PageId c) {
+    const std::uint16_t n = count();
+    set_key_at(n, k);
+    set_child_at(static_cast<std::uint16_t>(n + 1), c);
+    p_->set_slot_count(static_cast<std::uint16_t>(n + 1));
+  }
+
+  // Remove the first key and first child, shifting both arrays left.
+  void erase_front() {
+    const std::uint16_t n = count();
+    for (std::uint16_t i = 0; i + 1 < n; ++i)
+      set_key_at(i, key_at(static_cast<std::uint16_t>(i + 1)));
+    for (std::uint16_t i = 0; i < n; ++i)
+      set_child_at(i, child_at(static_cast<std::uint16_t>(i + 1)));
+    p_->set_slot_count(static_cast<std::uint16_t>(n - 1));
+  }
+
  private:
   Page* p_;
+};
+
+// ---------------------------------------------------------------- Cursor
+class BTree;  // forward declaration for friendship
+
+// A forward cursor over the leaves, positioned at some (key, value) and
+// able to step to the next one by walking the leaf sibling chain -- the
+// links we set on every split in Unit 2 and never used until now. Range
+// queries and full ordered scans are both this cursor plus a stop key.
+class Cursor {
+ public:
+  bool valid() const { return valid_; }
+  Key key() const { return key_; }
+  Value value() const { return value_; }
+  void next();  // advance to the next entry in key order
+
+ private:
+  friend class BTree;
+  explicit Cursor(Pager& pager) : pager_(&pager) {}
+  void settle();  // from (leaf_, idx_), find the next real entry or go invalid
+
+  Pager* pager_;
+  Page leaf_;
+  PageId leaf_id_ = kNullPage;
+  std::uint16_t idx_ = 0;
+  bool valid_ = false;
+  Key key_ = 0;
+  Value value_ = 0;
 };
 
 // ------------------------------------------------------------------ Tree
@@ -192,6 +288,16 @@ class BTree {
   // Point lookup: the operation Unit 1 could only answer by scanning.
   std::optional<Value> search(Key key) const;
 
+  // Remove a key. Returns true if it was present (and removed), false if it
+  // was absent. Rebalances by borrowing or merging so the tree stays at
+  // least half full, and collapses the root when it drops to one child.
+  bool erase(Key key);
+
+  // Open a forward cursor at the first key >= lo. Walk it with next() to
+  // read entries in ascending order -- a range scan is this plus a stop
+  // key; a full scan is seek(0) to exhaustion.
+  Cursor seek(Key lo) const;
+
   PageId root() const { return root_; }
 
   // Height in levels: 1 for a lone leaf root, +1 per internal level. Equal
@@ -206,6 +312,12 @@ class BTree {
 
   std::optional<Split> insert_rec(PageId node_id, Key key, Value value,
                                    bool& inserted);
+
+  // Deletion helpers (Unit 3). erase_rec removes the key and reports
+  // whether node_id underflowed; fix_child_underflow repairs child ci of a
+  // parent by borrowing from or merging with a sibling.
+  bool erase_rec(PageId node_id, Key key, bool& underflow);
+  void fix_child_underflow(Page& parent_page, std::uint16_t ci);
 
   Pager& pager_;
   PageId root_ = kNullPage;
