@@ -1,7 +1,7 @@
 # labdb
 
 > **This is the companion source code for the book**
-> **[Build a SQL Database Engine in C++ — Through Challenges](https://leanpub.com/REPLACE-WITH-YOUR-LEANPUB-BOOK-SLUG)**,
+> **[Build a SQL Database Engine in C++ — Through Challenges](https://leanpub.com/buildasqldatabaseengineinc)**,
 > covering Part I (Storage, Units 1–4) and Part II (From Bytes to a Query,
 > Units 5–8). Every listing in the book compiles exactly as printed; this
 > repository is that code, one unit at a time.
