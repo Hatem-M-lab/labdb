@@ -4,7 +4,7 @@ CXX      := g++
 CXXFLAGS := -std=c++20 -O2 -Wall -Wextra
 INC      := -Isrc -Itests
 ENGINE   := src/io.cpp src/pager.cpp src/btree.cpp src/buffer_pool.cpp \
-            src/heap.cpp src/catalog.cpp
+            src/heap.cpp src/catalog.cpp src/parser.cpp
 HDRS     := $(wildcard src/*.hpp) tests/harness.hpp
 
 TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
@@ -16,12 +16,14 @@ TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
          u03_range_bench u03_delete_bench \
          u04_buffer_pool_test u04_cache_bench \
          u05_record_test u05_heap_test u05_end_to_end_bench \
-         u06_catalog_test u06_catalog_bench
+         u06_catalog_test u06_catalog_bench \
+         u07_parser_test u07_parse_bench
 
 BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u01_c12_smoke bin/u01_c14_smoke bin/u02_median_bug_demo \
         bin/u03_merge_chain_bug_demo bin/u04_lost_update_demo \
-        bin/u05_null_shift_demo bin/u06_prefix_collision_demo
+        bin/u05_null_shift_demo bin/u06_prefix_collision_demo \
+        bin/u07_escape_swallow_demo
 
 all: $(BINS)
 
@@ -51,6 +53,10 @@ bin/u05_null_shift_demo: tools/u05_null_shift_demo.cpp $(HDRS) | bin
 bin/u06_prefix_collision_demo: tools/u06_prefix_collision_demo.cpp $(ENGINE) $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
 
+# The escape-swallow demo works purely on strings via the header-only lexer.
+bin/u07_escape_swallow_demo: tools/u07_escape_swallow_demo.cpp $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
+
 # The buffer-pool trap demo drives a real pool over a file, so unlike the
 # in-memory demos above it links the engine.
 bin/u04_lost_update_demo: tools/u04_lost_update_demo.cpp $(ENGINE) $(HDRS) | bin
@@ -71,7 +77,8 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
       bin/u03_delete_test bin/u03_scan_regression_test bin/u03_merge_chain_bug_demo \
       bin/u04_buffer_pool_test bin/u04_lost_update_demo \
       bin/u05_record_test bin/u05_heap_test bin/u05_null_shift_demo \
-      bin/u06_catalog_test bin/u06_prefix_collision_demo
+      bin/u06_catalog_test bin/u06_prefix_collision_demo \
+      bin/u07_parser_test bin/u07_escape_swallow_demo
 	./bin/u01_page_layout_test
 	./bin/u01_slotted_test
 	./bin/u01_pager_test
@@ -91,11 +98,13 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
 	./bin/u05_null_shift_demo
 	./bin/u06_catalog_test
 	./bin/u06_prefix_collision_demo
+	./bin/u07_parser_test
+	./bin/u07_escape_swallow_demo
 
 bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
        bin/u01_scan_bench bin/u02_search_bench bin/u02_insert_bench \
        bin/u03_range_bench bin/u03_delete_bench bin/u04_cache_bench \
-       bin/u05_end_to_end_bench bin/u06_catalog_bench
+       bin/u05_end_to_end_bench bin/u06_catalog_bench bin/u07_parse_bench
 	./bin/u01_header_bench
 	./bin/u01_churn_bench
 	./bin/u01_fsync_bench
@@ -107,6 +116,7 @@ bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
 	./bin/u04_cache_bench
 	./bin/u05_end_to_end_bench
 	./bin/u06_catalog_bench
+	./bin/u07_parse_bench
 
 clean:
 	rm -rf bin *.db *.bin *.img

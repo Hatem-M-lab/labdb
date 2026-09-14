@@ -16,7 +16,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 6 (the catalog). Part II in progress.
+Current state: Unit 7 (the front end: tokenizer and parser). Part II in progress.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -46,3 +46,10 @@ Current state: Unit 6 (the catalog). Part II in progress.
   of the one global slot. Rows are now inserted and looked up BY TABLE NAME:
   5 tables, 500k rows, 0 mismatches, at one extra page read per lookup. Run
   `sh scripts/run_unit06.sh`, or `./bin/u06_prefix_collision_demo` for the trap.
+- Unit 7 -- the front end: a SQL tokenizer and recursive-descent parser. Text
+  like `SELECT name FROM users WHERE id = 42` becomes an abstract syntax tree
+  whose nodes carry engine types (a Schema for CREATE, a Row of Fields for
+  INSERT). Case-insensitive keywords, the '' string escape, and compiler-quality
+  caret-pointed errors. ~1M statements/s, every statement round-trips through a
+  pretty-printer. No page code changed -- the front end sits entirely above the
+  engine. Run `sh scripts/run_unit07.sh`, or `./bin/u07_escape_swallow_demo`.
