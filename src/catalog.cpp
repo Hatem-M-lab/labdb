@@ -167,4 +167,20 @@ std::optional<Row> Catalog::get_by_key(const std::string& table, Key key) {
   return decode(d.schema, bytes);
 }
 
+void Catalog::scan_table(const std::string& table,
+                         const std::function<void(const Row&)>& visit) {
+  Page p;
+  load_catalog_page(p);
+  const std::size_t i = find_slot(p, table);
+  check_that(i != npos, "no such table");
+  const RawDesc d = read_desc(p, i);
+
+  BTree tree(pool_, d.btree_root, nullptr);
+  Heap heap(pool_, d.heap_head, nullptr);
+  for (Cursor c = tree.seek(0); c.valid(); c.next()) {
+    const RID rid = rid_decode(c.value());
+    visit(decode(d.schema, heap.get(rid)));
+  }
+}
+
 }  // namespace labdb

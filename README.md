@@ -16,7 +16,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 7 (the front end: tokenizer and parser). Part II in progress.
+Current state: Unit 8 (the executor). This is the end of Part II -- the engine now runs SQL end to end.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -53,3 +53,11 @@ Current state: Unit 7 (the front end: tokenizer and parser). Part II in progress
   caret-pointed errors. ~1M statements/s, every statement round-trips through a
   pretty-printer. No page code changed -- the front end sits entirely above the
   engine. Run `sh scripts/run_unit07.sh`, or `./bin/u07_escape_swallow_demo`.
+- Unit 8 -- the executor (Part II milestone): SQL, end to end. An executor walks
+  the parser's AST into engine calls -- CREATE registers a schema, INSERT
+  reconciles literals to column types and stores a row, SELECT resolves a
+  projection, chooses a point lookup or a scan, applies WHERE, and shapes the
+  result. `run_sql("SELECT name FROM users WHERE id = 42")` returns the row,
+  across all seven layers beneath. 220k rows built and queried in SQL; indexed
+  lookups ~2.4us; a cold reopen answers the same. Run `sh scripts/run_unit08.sh`,
+  or `./bin/u08_key_range_demo` for the trap.

@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -82,6 +83,14 @@ class Catalog {
   // Look a row up by its key column, through that table's own index --
   // reached by name, not by a heap or tree handle the caller had to keep.
   std::optional<Row> get_by_key(const std::string& table, Key key);
+
+  // Visit every row of a named table in key order, decoded. The executor
+  // uses this for a SELECT that is not a point lookup on the key column: it
+  // walks the table's own tree cursor, fetches each row from the table's
+  // heap, and hands the decoded Row to `visit`. Returning rows in key order
+  // falls out of the B+Tree leaf chain for free (Unit 3's Cursor).
+  void scan_table(const std::string& table,
+                  const std::function<void(const Row&)>& visit);
 
  private:
   struct RawDesc {  // an in-memory read of one on-page slot
