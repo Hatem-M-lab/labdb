@@ -1,5 +1,15 @@
 # labdb
 
+> **This is the companion source code for the book**
+> **[Build a SQL Database Engine in C++ — Through Challenges](https://leanpub.com/REPLACE-WITH-YOUR-LEANPUB-BOOK-SLUG)**,
+> covering Part I (Storage, Units 1–4) and Part II (From Bytes to a Query,
+> Units 5–8). Every listing in the book compiles exactly as printed; this
+> repository is that code, one unit at a time.
+>
+> **Following along with the book?** `git checkout unit-04` (or any
+> `unit-01` through `unit-08`) to get the exact code state that unit's
+> chapter shows. The `master` branch always has the latest, full engine.
+
 The SQL database engine built, one challenge at a time, in *Build a SQL
 Database Engine in C++ -- Through Challenges*. C++20, standard library and
 POSIX only. Everything compiles with:
