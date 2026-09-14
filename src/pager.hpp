@@ -49,6 +49,19 @@ class Pager {
   std::uint32_t page_count() const { return page_count_; }
   PageId freelist_head() const { return freelist_head_; }
 
+  // The B+Tree root lives in the meta page so it survives a reopen. A
+  // fresh database reports kNullPage ("no tree yet"); Unit 2 uses this to
+  // decide whether to plant a new tree or open an existing one. (When the
+  // catalog arrives in Unit 7, this single-root field is replaced by a
+  // per-table root; for now one tree is enough.)
+  PageId btree_root() const { return btree_root_; }
+  void set_btree_root(PageId id);
+
+  // Instrumentation: how many page reads have happened. Unit 2's headline
+  // measurement counts the reads a point lookup costs; this is the meter.
+  std::uint64_t read_count() const { return reads_; }
+  void reset_read_count() { reads_ = 0; }
+
   // Walks the free list and counts it. O(free pages) reads; for tests
   // and the stats output, not for hot paths.
   std::uint32_t freelist_length();
@@ -59,6 +72,8 @@ class Pager {
   int fd_ = -1;
   std::uint32_t page_count_ = 0;
   PageId freelist_head_ = kNullPage;
+  PageId btree_root_ = kNullPage;
+  std::uint64_t reads_ = 0;
 };
 
 }  // namespace labdb

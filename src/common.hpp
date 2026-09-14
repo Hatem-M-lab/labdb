@@ -65,11 +65,21 @@ inline std::uint32_t load_u32(const std::uint8_t* p) {
   return v;
 }
 
+inline std::uint64_t load_u64(const std::uint8_t* p) {
+  std::uint64_t v;
+  std::memcpy(&v, p, sizeof v);
+  return v;
+}
+
 inline void store_u16(std::uint8_t* p, std::uint16_t v) {
   std::memcpy(p, &v, sizeof v);
 }
 
 inline void store_u32(std::uint8_t* p, std::uint32_t v) {
+  std::memcpy(p, &v, sizeof v);
+}
+
+inline void store_u64(std::uint8_t* p, std::uint64_t v) {
   std::memcpy(p, &v, sizeof v);
 }
 

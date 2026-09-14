@@ -18,11 +18,13 @@ namespace {
 //       20     8  magic: "labdb001"
 //       28     4  u32 page_count (includes page 0)
 //       32     4  u32 free-list head page id (0 = empty list)
+//       36     4  u32 btree_root  page id (0 = no tree yet)   [Unit 2]
 //
 constexpr char kMagic[8] = {'l', 'a', 'b', 'd', 'b', '0', '0', '1'};
 constexpr std::size_t kMetaMagicOff = kPageHeaderSize;
 constexpr std::size_t kMetaPageCountOff = kMetaMagicOff + sizeof kMagic;
 constexpr std::size_t kMetaFreelistOff = kMetaPageCountOff + 4;
+constexpr std::size_t kMetaBtreeRootOff = kMetaFreelistOff + 4;
 
 off_t page_offset(PageId id) {
   return static_cast<off_t>(id) * static_cast<off_t>(kPageSize);
@@ -55,6 +57,7 @@ Pager::Pager(const std::string& path) {
              "bad magic: this is not a labdb file");
   page_count_ = load_u32(meta.data() + kMetaPageCountOff);
   freelist_head_ = load_u32(meta.data() + kMetaFreelistOff);
+  btree_root_ = load_u32(meta.data() + kMetaBtreeRootOff);
   check_that(page_count_ ==
                  static_cast<std::uint32_t>(st.st_size / kPageSize),
              "meta page count disagrees with the file size");
@@ -69,6 +72,7 @@ Pager::~Pager() {
 
 void Pager::read_page(PageId id, Page& out) {
   check_that(id != 0 && id < page_count_, "read_page: page id out of range");
+  ++reads_;
   pread_exact(fd_, out.data(), kPageSize, page_offset(id));
   // Self-check: a formatted page must know its own name. Catches offset
   // arithmetic bugs the moment they happen instead of three units later.
@@ -141,6 +145,11 @@ std::uint32_t Pager::freelist_length() {
   return n;
 }
 
+void Pager::set_btree_root(PageId id) {
+  btree_root_ = id;
+  store_meta();
+}
+
 void Pager::store_meta() {
   Page meta;
   meta.set_id(0);
@@ -148,6 +157,7 @@ void Pager::store_meta() {
   std::memcpy(meta.data() + kMetaMagicOff, kMagic, sizeof kMagic);
   store_u32(meta.data() + kMetaPageCountOff, page_count_);
   store_u32(meta.data() + kMetaFreelistOff, freelist_head_);
+  store_u32(meta.data() + kMetaBtreeRootOff, btree_root_);
   pwrite_exact(fd_, meta.data(), kPageSize, 0);
 }
 

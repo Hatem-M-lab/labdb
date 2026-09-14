@@ -12,10 +12,12 @@
 namespace labdb {
 
 enum class PageType : std::uint16_t {
-  kInvalid = 0,  // all-zero page: allocated but never formatted
-  kMeta    = 1,  // page 0 only: pager bookkeeping (Challenge 1.4)
-  kSlotted = 2,  // variable-length records (Challenge 1.2)
-  kFree    = 3,  // on the free list (Challenge 1.5)
+  kInvalid      = 0,  // all-zero page: allocated but never formatted
+  kMeta         = 1,  // page 0 only: pager bookkeeping (Challenge 1.4)
+  kSlotted      = 2,  // variable-length records (Challenge 1.2)
+  kFree         = 3,  // on the free list (Challenge 1.5)
+  kBTreeLeaf    = 4,  // B+Tree leaf: sorted (key,value) pairs (Unit 2)
+  kBTreeInternal = 5, // B+Tree internal: keys + child pointers (Unit 2)
 };
 
 // Header layout, byte-exact:
