@@ -2,16 +2,16 @@
 
 namespace labdb {
 
-BTree::BTree(Pager& pager) : pager_(pager) {
-  root_ = pager_.btree_root();
+BTree::BTree(BufferPool& pool) : pool_(pool) {
+  root_ = pool_.btree_root();
   if (root_ == kNullPage) {
     // Plant a fresh tree: a single empty leaf that is also the root.
-    root_ = pager_.allocate_page();
+    root_ = pool_.allocate_page();
     Page p;
     LeafNode leaf(p);
     leaf.init(root_);
-    pager_.write_page(root_, p);
-    pager_.set_btree_root(root_);
+    pool_.write_page(root_, p);
+    pool_.set_btree_root(root_);
   }
 }
 
@@ -19,7 +19,7 @@ std::optional<Value> BTree::search(Key key) const {
   PageId node_id = root_;
   Page p;
   for (;;) {
-    pager_.read_page(node_id, p);
+    pool_.read_page(node_id, p);
     if (p.type() == PageType::kBTreeLeaf) {
       LeafNode leaf(p);
       const std::uint16_t i = leaf.lower_bound(key);
@@ -37,7 +37,7 @@ int BTree::height() const {
   PageId node_id = root_;
   Page p;
   for (;;) {
-    pager_.read_page(node_id, p);
+    pool_.read_page(node_id, p);
     if (p.type() == PageType::kBTreeLeaf) return levels;
     InternalNode node(p);
     node_id = node.child_at(0);  // descend the leftmost spine
@@ -48,7 +48,7 @@ int BTree::height() const {
 std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
                                               Value value, bool& inserted) {
   Page p;
-  pager_.read_page(node_id, p);
+  pool_.read_page(node_id, p);
 
   // ---------------------------------------------------------------- leaf
   if (p.type() == PageType::kBTreeLeaf) {
@@ -56,13 +56,13 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
     const std::uint16_t i = leaf.lower_bound(key);
     if (i < leaf.count() && leaf.key_at(i) == key) {
       leaf.set_value_at(i, value);          // key exists: update in place
-      pager_.write_page(node_id, p);
+      pool_.write_page(node_id, p);
       inserted = false;
       return std::nullopt;
     }
     if (!leaf.is_full()) {
       leaf.insert_at(i, key, value);
-      pager_.write_page(node_id, p);
+      pool_.write_page(node_id, p);
       inserted = true;
       return std::nullopt;
     }
@@ -71,7 +71,7 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
     // before inserting means no page ever has to hold one entry too many.
     Page rp;
     LeafNode right(rp);
-    const PageId right_id = pager_.allocate_page();
+    const PageId right_id = pool_.allocate_page();
     right.init(right_id);
 
     const std::uint16_t mid = static_cast<std::uint16_t>(leaf.count() / 2);
@@ -88,8 +88,8 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
     // STAYS in the right leaf. (Moving it up instead -- the B-Tree reflex
     // -- is this unit's forensic trap.)
     const Key sep = right.key_at(0);
-    pager_.write_page(node_id, p);
-    pager_.write_page(right_id, rp);
+    pool_.write_page(node_id, p);
+    pool_.write_page(right_id, rp);
     inserted = true;
     return Split{sep, right_id};
   }
@@ -103,7 +103,7 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
 
   if (!node.is_full()) {
     node.insert_child_at(ci, child_split->sep_key, child_split->right);
-    pager_.write_page(node_id, p);
+    pool_.write_page(node_id, p);
     return std::nullopt;
   }
 
@@ -112,7 +112,7 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
   // the incoming separator into whichever half now owns its range.
   Page rp;
   InternalNode right(rp);
-  const PageId right_id = pager_.allocate_page();
+  const PageId right_id = pool_.allocate_page();
   right.init(right_id);
 
   const std::uint16_t n = node.count();
@@ -138,8 +138,8 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
     right.insert_child_at(pos, child_split->sep_key, child_split->right);
   }
 
-  pager_.write_page(node_id, p);
-  pager_.write_page(right_id, rp);
+  pool_.write_page(node_id, p);
+  pool_.write_page(right_id, rp);
   return Split{median, right_id};  // median moves up to our parent
 }
 
@@ -151,15 +151,15 @@ bool BTree::insert(Key key, Value value) {
     // only place the tree gains height.
     Page rp;
     InternalNode new_root(rp);
-    const PageId new_root_id = pager_.allocate_page();
+    const PageId new_root_id = pool_.allocate_page();
     new_root.init(new_root_id);
     new_root.set_key_at(0, split->sep_key);
     new_root.set_child_at(0, root_);
     new_root.set_child_at(1, split->right);
     new_root.set_count(1);
-    pager_.write_page(new_root_id, rp);
+    pool_.write_page(new_root_id, rp);
     root_ = new_root_id;
-    pager_.set_btree_root(root_);
+    pool_.set_btree_root(root_);
   }
   return inserted;
 }
@@ -175,14 +175,14 @@ bool BTree::erase(Key key) {
   // single child, that child becomes the new root. This is the only place
   // the tree loses height -- the inverse of insert's root growth.
   Page p;
-  pager_.read_page(root_, p);
+  pool_.read_page(root_, p);
   if (p.type() == PageType::kBTreeInternal) {
     InternalNode root(p);
     if (root.count() == 0) {
       const PageId only = root.child_at(0);
-      pager_.free_page(root_);
+      pool_.free_page(root_);
       root_ = only;
-      pager_.set_btree_root(root_);
+      pool_.set_btree_root(root_);
     }
   }
   return true;
@@ -190,7 +190,7 @@ bool BTree::erase(Key key) {
 
 bool BTree::erase_rec(PageId node_id, Key key, bool& underflow) {
   Page p;
-  pager_.read_page(node_id, p);
+  pool_.read_page(node_id, p);
 
   if (p.type() == PageType::kBTreeLeaf) {
     LeafNode leaf(p);
@@ -200,7 +200,7 @@ bool BTree::erase_rec(PageId node_id, Key key, bool& underflow) {
       return false;  // key absent
     }
     leaf.erase_at(i);
-    pager_.write_page(node_id, p);
+    pool_.write_page(node_id, p);
     underflow = leaf.is_underflow();
     return true;
   }
@@ -214,7 +214,7 @@ bool BTree::erase_rec(PageId node_id, Key key, bool& underflow) {
     return false;
   }
   if (child_underflow) fix_child_underflow(p, ci);  // may shrink this node
-  pager_.write_page(node_id, p);
+  pool_.write_page(node_id, p);
   underflow = InternalNode(p).is_underflow();
   return true;
 }
@@ -227,14 +227,14 @@ void BTree::fix_child_underflow(Page& parent_page, std::uint16_t ci) {
   InternalNode parent(parent_page);
   const PageId child_id = parent.child_at(ci);
   Page cp;
-  pager_.read_page(child_id, cp);
+  pool_.read_page(child_id, cp);
   const bool leaf = (cp.type() == PageType::kBTreeLeaf);
 
   // ---- borrow from the left sibling ----
   if (ci > 0) {
     const PageId left_id = parent.child_at(static_cast<std::uint16_t>(ci - 1));
     Page lp;
-    pager_.read_page(left_id, lp);
+    pool_.read_page(left_id, lp);
     const bool spare = leaf ? (LeafNode(lp).count() > kLeafMinEntries)
                             : (InternalNode(lp).count() > kInternalMinKeys);
     if (spare) {
@@ -254,8 +254,8 @@ void BTree::fix_child_underflow(Page& parent_page, std::uint16_t ci) {
         L.set_count(static_cast<std::uint16_t>(lc - 1));     // drop L's last key+child
         parent.set_key_at(static_cast<std::uint16_t>(ci - 1), up);  // rotate up
       }
-      pager_.write_page(left_id, lp);
-      pager_.write_page(child_id, cp);
+      pool_.write_page(left_id, lp);
+      pool_.write_page(child_id, cp);
       return;
     }
   }
@@ -264,7 +264,7 @@ void BTree::fix_child_underflow(Page& parent_page, std::uint16_t ci) {
   if (ci < parent.count()) {
     const PageId right_id = parent.child_at(static_cast<std::uint16_t>(ci + 1));
     Page rp;
-    pager_.read_page(right_id, rp);
+    pool_.read_page(right_id, rp);
     const bool spare = leaf ? (LeafNode(rp).count() > kLeafMinEntries)
                             : (InternalNode(rp).count() > kInternalMinKeys);
     if (spare) {
@@ -282,8 +282,8 @@ void BTree::fix_child_underflow(Page& parent_page, std::uint16_t ci) {
         R.erase_front();
         parent.set_key_at(ci, up);                           // rotate up
       }
-      pager_.write_page(child_id, cp);
-      pager_.write_page(right_id, rp);
+      pool_.write_page(child_id, cp);
+      pool_.write_page(right_id, rp);
       return;
     }
   }
@@ -294,7 +294,7 @@ void BTree::fix_child_underflow(Page& parent_page, std::uint16_t ci) {
     const std::uint16_t si = static_cast<std::uint16_t>(ci - 1);
     const PageId left_id = parent.child_at(si);
     Page lp;
-    pager_.read_page(left_id, lp);
+    pool_.read_page(left_id, lp);
     if (leaf) {
       LeafNode L(lp), C(cp);
       L.append_from(C);
@@ -309,14 +309,14 @@ void BTree::fix_child_underflow(Page& parent_page, std::uint16_t ci) {
         L.set_child_at(static_cast<std::uint16_t>(lc + 1 + i), C.child_at(i));
       L.set_count(static_cast<std::uint16_t>(lc + 1 + cc));
     }
-    pager_.write_page(left_id, lp);
-    pager_.free_page(child_id);
+    pool_.write_page(left_id, lp);
+    pool_.free_page(child_id);
     parent.erase_key_child_at(si);
   } else {
     // Merge the right sibling into child ci; drop separator ci and child ci+1.
     const PageId right_id = parent.child_at(static_cast<std::uint16_t>(ci + 1));
     Page rp;
-    pager_.read_page(right_id, rp);
+    pool_.read_page(right_id, rp);
     if (leaf) {
       LeafNode C(cp), R(rp);
       C.append_from(R);
@@ -331,8 +331,8 @@ void BTree::fix_child_underflow(Page& parent_page, std::uint16_t ci) {
         C.set_child_at(static_cast<std::uint16_t>(cc + 1 + i), R.child_at(i));
       C.set_count(static_cast<std::uint16_t>(cc + 1 + rc));
     }
-    pager_.write_page(child_id, cp);
-    pager_.free_page(right_id);
+    pool_.write_page(child_id, cp);
+    pool_.free_page(right_id);
     parent.erase_key_child_at(ci);
   }
 }
@@ -357,7 +357,7 @@ void Cursor::settle() {
       valid_ = false;
       return;
     }
-    pager_->read_page(leaf_id_, leaf_);
+    pool_->read_page(leaf_id_, leaf_);
     idx_ = 0;
   }
 }
@@ -368,11 +368,11 @@ void Cursor::next() {
 }
 
 Cursor BTree::seek(Key lo) const {
-  Cursor c(pager_);
+  Cursor c(pool_);
   PageId id = root_;
   Page p;
   for (;;) {  // descend to the leaf that would hold lo
-    pager_.read_page(id, p);
+    pool_.read_page(id, p);
     if (p.type() == PageType::kBTreeLeaf) break;
     InternalNode node(p);
     id = node.child_at(node.child_index_for(lo));

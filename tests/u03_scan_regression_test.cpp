@@ -13,6 +13,7 @@
 #include "btree.hpp"
 #include "harness.hpp"
 #include "page.hpp"
+#include "buffer_pool.hpp"
 #include "pager.hpp"
 
 using namespace labdb;
@@ -21,7 +22,8 @@ int main() {
   const char* path = "u03_scan_regression_test.db";
   ::unlink(path);
   Pager pager(path);
-  BTree tree(pager);
+  BufferPool pool(pager, 4096);
+  BTree tree(pool);
 
   // Insert a dense ascending run so leaves are packed and adjacent, then
   // delete 7 of every 8 keys. Deleting most keys from packed leaves forces

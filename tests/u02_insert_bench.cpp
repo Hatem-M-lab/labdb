@@ -16,6 +16,7 @@
 #include "btree.hpp"
 #include "harness.hpp"
 #include "page.hpp"
+#include "buffer_pool.hpp"
 #include "pager.hpp"
 
 using namespace labdb;
@@ -34,15 +35,16 @@ struct Result {
 Result build(const std::string& path, const std::vector<Key>& order) {
   ::unlink(path.c_str());
   Pager pager(path);
-  BTree tree(pager);
+  BufferPool pool(pager, 4096);
+  BTree tree(pool);
   const double t0 = now_s();
   for (Key k : order) tree.insert(k, k);
   const double build_s = now_s() - t0;
 
   Page p;
   Result r{build_s, 0, 0, order.size(), tree.height()};
-  for (PageId id = 1; id < pager.page_count(); ++id) {
-    pager.read_page(id, p);
+  for (PageId id = 1; id < pool.page_count(); ++id) {
+    pool.read_page(id, p);
     if (p.type() == PageType::kBTreeLeaf) ++r.leaves;
     else if (p.type() == PageType::kBTreeInternal) ++r.internal;
   }

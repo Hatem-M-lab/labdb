@@ -12,6 +12,7 @@
 #include "btree.hpp"
 #include "harness.hpp"
 #include "page.hpp"
+#include "buffer_pool.hpp"
 #include "pager.hpp"
 
 using namespace labdb;
@@ -20,7 +21,8 @@ int main() {
   const char* path = "u02_split_regression_test.db";
   ::unlink(path);
   Pager pager(path);
-  BTree tree(pager);
+  BufferPool pool(pager, 4096);
+  BTree tree(pool);
 
   // Insert enough ascending keys to build a multi-level tree with many
   // splits. Ascending order makes the boundary keys land exactly on split
@@ -43,8 +45,8 @@ int main() {
   // that promotion was a copy, not a move.
   Page p;
   std::size_t separators = 0, sep_missing = 0;
-  for (PageId id = 1; id < pager.page_count(); ++id) {
-    pager.read_page(id, p);
+  for (PageId id = 1; id < pool.page_count(); ++id) {
+    pool.read_page(id, p);
     if (p.type() != PageType::kBTreeInternal) continue;
     InternalNode n(p);
     for (std::uint16_t i = 0; i < n.count(); ++i) {

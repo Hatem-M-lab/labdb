@@ -13,6 +13,7 @@
 #include "btree.hpp"
 #include "harness.hpp"
 #include "page.hpp"
+#include "buffer_pool.hpp"
 #include "pager.hpp"
 
 using namespace labdb;
@@ -20,12 +21,12 @@ using labdb::test::now_s;
 
 namespace {
 // Length of the free list, walked defensively.
-std::size_t freelist_len(Pager& pager) {
+std::size_t freelist_len(BufferPool& pool) {
   std::size_t n = 0;
-  PageId id = pager.freelist_head();
+  PageId id = pool.freelist_head();
   Page p;
-  while (id != kNullPage && n <= pager.page_count()) {
-    pager.read_page(id, p);
+  while (id != kNullPage && n <= pool.page_count()) {
+    pool.read_page(id, p);
     ++n;
     id = p.next_page();
   }
@@ -39,14 +40,15 @@ int main() {
   constexpr Key kN = 1000000;
 
   Pager pager(path);
-  BTree tree(pager);
+  BufferPool pool(pager, 4096);
+  BTree tree(pool);
   for (Key k = 0; k < kN; ++k) tree.insert(k, k);
 
-  const std::uint32_t pages_full = pager.page_count();
+  const std::uint32_t pages_full = pool.page_count();
   const int height_full = tree.height();
   std::printf("full tree: %llu keys, height %d, %u pages, free list %zu\n\n",
               (unsigned long long)kN, height_full, pages_full,
-              freelist_len(pager));
+              freelist_len(pool));
 
   // Delete in random order (the demanding case for rebalancing) and sample
   // height and free-list length as the tree drains.
@@ -65,7 +67,7 @@ int main() {
     const std::size_t remaining = kN - (i + 1);
     if (mark_i < 5 && remaining == marks[mark_i]) {
       std::printf("| %zu | %d | %zu |\n", remaining, tree.height(),
-                  freelist_len(pager));
+                  freelist_len(pool));
       ++mark_i;
     }
   }
@@ -76,7 +78,7 @@ int main() {
       "file never grew past %u pages because merges recycle freed pages onto "
       "the free list for reuse.\n",
       (unsigned long long)kN, secs, double(kN) / secs / 1e6, height_full,
-      pager.page_count());
+      pool.page_count());
 
   ::unlink(path);
   return 0;

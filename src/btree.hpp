@@ -20,7 +20,7 @@
 #include <optional>
 
 #include "page.hpp"
-#include "pager.hpp"
+#include "buffer_pool.hpp"
 
 namespace labdb {
 
@@ -262,10 +262,10 @@ class Cursor {
 
  private:
   friend class BTree;
-  explicit Cursor(Pager& pager) : pager_(&pager) {}
+  explicit Cursor(BufferPool& pool) : pool_(&pool) {}
   void settle();  // from (leaf_, idx_), find the next real entry or go invalid
 
-  Pager* pager_;
+  BufferPool* pool_;
   Page leaf_;
   PageId leaf_id_ = kNullPage;
   std::uint16_t idx_ = 0;
@@ -279,7 +279,7 @@ class BTree {
  public:
   // Opens the tree recorded in the pager's meta page, planting a fresh
   // (empty leaf) root if there is none.
-  explicit BTree(Pager& pager);
+  explicit BTree(BufferPool& pool);
 
   // Insert or update. Returns true if the key was newly inserted, false
   // if an existing key's value was overwritten.
@@ -319,7 +319,7 @@ class BTree {
   bool erase_rec(PageId node_id, Key key, bool& underflow);
   void fix_child_underflow(Page& parent_page, std::uint16_t ci);
 
-  Pager& pager_;
+  BufferPool& pool_;
   PageId root_ = kNullPage;
 };
 

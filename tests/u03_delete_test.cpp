@@ -14,6 +14,7 @@
 #include "btree.hpp"
 #include "harness.hpp"
 #include "page.hpp"
+#include "buffer_pool.hpp"
 #include "pager.hpp"
 
 using namespace labdb;
@@ -50,11 +51,11 @@ void check_range(const BTree& tree, const std::map<Key, Value>& ref, Key lo,
 
 // After heavy deletion, walk the leaf chain and confirm it still visits
 // every key exactly once in sorted order with no orphaned or dangling leaf.
-void check_chain(Pager& pager, PageId root, std::size_t expected) {
+void check_chain(BufferPool& pool, PageId root, std::size_t expected) {
   Page p;
   PageId id = root;
   for (;;) {  // leftmost leaf
-    pager.read_page(id, p);
+    pool.read_page(id, p);
     if (p.type() == PageType::kBTreeLeaf) break;
     id = InternalNode(p).child_at(0);
   }
@@ -62,7 +63,7 @@ void check_chain(Pager& pager, PageId root, std::size_t expected) {
   Key prev = 0;
   bool first = true;
   while (id != kNullPage) {
-    pager.read_page(id, p);
+    pool.read_page(id, p);
     LeafNode n(p);
     for (std::uint16_t i = 0; i < n.count(); ++i) {
       if (!first) REQUIRE(prev < n.key_at(i));
@@ -86,7 +87,8 @@ int main() {
 
   {
     Pager pager(path);
-    BTree tree(pager);
+    BufferPool pool(pager, 4096);
+    BTree tree(pool);
 
     // Build a good-sized tree.
     for (int i = 0; i < 300000; ++i) {
@@ -137,24 +139,25 @@ int main() {
       REQUIRE(g && *g == v);
     }
     check_full_scan(tree, ref);
-    check_chain(pager, tree.root(), ref.size());
+    check_chain(pool, tree.root(), ref.size());
     std::printf(
         "PASS agreement: %zu keys match map, chain intact, height=%d\n",
         ref.size(), tree.height());
-    pager.sync();
+    pool.sync();
   }
 
   // Persistence: reopen and re-verify by scan.
   {
     Pager pager(path);
-    BTree tree(pager);
+    BufferPool pool(pager, 4096);
+    BTree tree(pool);
     check_full_scan(tree, ref);
     std::printf("PASS reopen: %zu keys survived, scan matches\n", ref.size());
 
     // Delete every key; the tree must empty cleanly and collapse to a lone
     // leaf root, and reclaim pages onto the free list along the way.
-    const std::uint32_t pages_before = pager.page_count();
-    const PageId freelen_probe = pager.freelist_head();
+    const std::uint32_t pages_before = pool.page_count();
+    const PageId freelen_probe = pool.freelist_head();
     (void)freelen_probe;
     std::vector<Key> keys;
     keys.reserve(ref.size());
@@ -166,7 +169,7 @@ int main() {
     for (auto c = tree.seek(0); c.valid(); c.next()) ++scan_n;
     REQUIRE(scan_n == 0);
     REQUIRE(tree.height() == 1);  // collapsed back to a single leaf
-    REQUIRE(pager.freelist_head() != kNullPage);  // merges freed pages
+    REQUIRE(pool.freelist_head() != kNullPage);  // merges freed pages
     std::printf(
         "PASS empty: all keys deleted, height back to 1, scan yields 0, "
         "%u pages now recycled on the free list\n",

@@ -13,6 +13,7 @@
 #include "btree.hpp"
 #include "harness.hpp"
 #include "page.hpp"
+#include "buffer_pool.hpp"
 #include "pager.hpp"
 
 using namespace labdb;
@@ -24,7 +25,8 @@ int main() {
   constexpr Key kN = 1000000;
 
   Pager pager(path);
-  BTree tree(pager);
+  BufferPool pool(pager, 4096);
+  BTree tree(pool);
 
   // Build: a million random keys.
   std::mt19937_64 rng(424242);
@@ -41,8 +43,8 @@ int main() {
   // Count leaf and internal pages (the tree's data pages vs routing pages).
   Page p;
   std::size_t leaves = 0, internal = 0;
-  for (PageId id = 1; id < pager.page_count(); ++id) {
-    pager.read_page(id, p);
+  for (PageId id = 1; id < pool.page_count(); ++id) {
+    pool.read_page(id, p);
     if (p.type() == PageType::kBTreeLeaf) ++leaves;
     else if (p.type() == PageType::kBTreeInternal) ++internal;
   }
@@ -50,7 +52,7 @@ int main() {
   std::printf("built B+Tree: %llu keys, height %d, %zu leaves + %zu internal "
               "= %u pages, in %.2f s\n\n",
               (unsigned long long)kN, tree.height(), leaves, internal,
-              pager.page_count(), build_s);
+              pool.page_count(), build_s);
 
   // Pick a random sample of present keys and a disjoint set of absent keys.
   std::shuffle(keys.begin(), keys.end(), rng);
@@ -61,10 +63,10 @@ int main() {
   std::uint64_t total_reads_present = 0;
   const double t_p0 = now_s();
   for (int i = 0; i < kSample; ++i) {
-    pager.reset_read_count();
+    pool.reset_read_count();
     volatile auto v = tree.search(keys[static_cast<std::size_t>(i)]);
     (void)v;
-    total_reads_present += pager.read_count();
+    total_reads_present += pool.read_count();
   }
   const double present_s = now_s() - t_p0;
 
@@ -72,11 +74,11 @@ int main() {
   std::mt19937_64 arng(999);
   const double t_a0 = now_s();
   for (int i = 0; i < kSample; ++i) {
-    pager.reset_read_count();
+    pool.reset_read_count();
     // odd synthetic keys unlikely to collide with the 64-bit random set
     volatile auto v = tree.search((static_cast<Key>(i) << 1) | 1);
     (void)v;
-    total_reads_absent += pager.read_count();
+    total_reads_absent += pool.read_count();
   }
   const double absent_s = now_s() - t_a0;
 

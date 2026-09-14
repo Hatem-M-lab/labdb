@@ -12,6 +12,7 @@
 #include "btree.hpp"
 #include "harness.hpp"
 #include "page.hpp"
+#include "buffer_pool.hpp"
 #include "pager.hpp"
 
 using namespace labdb;
@@ -22,11 +23,11 @@ namespace {
 // each node's keys are strictly ascending, no node overflows its
 // capacity, and the leaf sibling chain visits keys in globally sorted
 // order with the right total count.
-void check_structure(Pager& pager, PageId root, std::size_t expected_keys) {
+void check_structure(BufferPool& pool, PageId root, std::size_t expected_keys) {
   Page p;
   std::size_t internal = 0, leaf = 0;
-  for (PageId id = 1; id < pager.page_count(); ++id) {
-    pager.read_page(id, p);
+  for (PageId id = 1; id < pool.page_count(); ++id) {
+    pool.read_page(id, p);
     if (p.type() == PageType::kBTreeLeaf) {
       ++leaf;
       LeafNode n(p);
@@ -47,7 +48,7 @@ void check_structure(Pager& pager, PageId root, std::size_t expected_keys) {
   // across the whole chain and total to the expected count.
   PageId id = root;
   for (;;) {
-    pager.read_page(id, p);
+    pool.read_page(id, p);
     if (p.type() == PageType::kBTreeLeaf) break;
     InternalNode n(p);
     id = n.child_at(0);
@@ -57,7 +58,7 @@ void check_structure(Pager& pager, PageId root, std::size_t expected_keys) {
   bool first = true;
   std::size_t leaves_walked = 0;
   while (id != kNullPage) {
-    pager.read_page(id, p);
+    pool.read_page(id, p);
     LeafNode n(p);
     ++leaves_walked;
     for (std::uint16_t i = 0; i < n.count(); ++i) {
@@ -90,7 +91,8 @@ int main() {
   // ---- Phase 1: sequential ascending inserts (worst case for fill) ----
   {
     Pager pager(path);
-    BTree tree(pager);
+    BufferPool pool(pager, 4096);
+    BTree tree(pool);
     for (Key k = 1; k <= 50000; ++k) {
       REQUIRE(tree.insert(k, k * 10));
       ref[k] = k * 10;
@@ -102,14 +104,15 @@ int main() {
     std::printf("PASS sequential: 50000 ascending keys, height=%d\n",
                 tree.height());
     root = tree.root();
-    check_structure(pager, root, ref.size());
-    pager.sync();
+    check_structure(pool, root, ref.size());
+    pool.sync();
   }
 
   // ---- Phase 2: reopen, then 500k randomized mixed operations ----
   {
     Pager pager(path);
-    BTree tree(pager);
+    BufferPool pool(pager, 4096);
+    BTree tree(pool);
     // Persistence: everything from phase 1 is still here.
     for (const auto& [k, v] : ref) {
       auto got = tree.search(k);
@@ -151,9 +154,9 @@ int main() {
                 ref.size());
 
     root = tree.root();
-    check_structure(pager, root, ref.size());
+    check_structure(pool, root, ref.size());
     std::printf("final tree: height=%d, %u pages\n", tree.height(),
-                pager.page_count());
+                pool.page_count());
   }
 
   ::unlink(path);

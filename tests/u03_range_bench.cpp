@@ -15,6 +15,7 @@
 #include "btree.hpp"
 #include "harness.hpp"
 #include "page.hpp"
+#include "buffer_pool.hpp"
 #include "pager.hpp"
 
 using namespace labdb;
@@ -26,11 +27,12 @@ int main() {
   constexpr Key kN = 1000000;
 
   Pager pager(path);
-  BTree tree(pager);
+  BufferPool pool(pager, 4096);
+  BTree tree(pool);
   // Dense keys 0..N-1 so a width-W range holds ~W results.
   for (Key k = 0; k < kN; ++k) tree.insert(k, k);
   std::printf("tree: %llu keys, height %d, %u pages. Leaf holds %u entries.\n\n",
-              (unsigned long long)kN, tree.height(), pager.page_count(),
+              (unsigned long long)kN, tree.height(), pool.page_count(),
               kLeafMaxEntries);
 
   std::printf("| range width | rows returned | pages read | ns/row |\n");
@@ -46,10 +48,10 @@ int main() {
     for (int t = 0; t < trials; ++t) {
       const Key lo = rng() % (kN - w);
       const Key hi = lo + w - 1;
-      pager.reset_read_count();
+      pool.reset_read_count();
       std::uint64_t rows = 0;
       for (auto c = tree.seek(lo); c.valid() && c.key() <= hi; c.next()) ++rows;
-      total_reads += pager.read_count();
+      total_reads += pool.read_count();
       total_rows += rows;
     }
     const double secs = now_s() - t0;

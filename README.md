@@ -16,7 +16,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 3 (B+Tree delete and range scans).
+Current state: Unit 4 (the buffer pool). This is the end of Part I.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -25,6 +25,10 @@ Current state: Unit 3 (B+Tree delete and range scans).
   Point lookup among a million keys reads 3 pages instead of scanning 16,950.
 - Unit 3 -- B+Tree delete and range scans: deletion with borrow/merge/
   root-collapse (freed pages return to the free list), and ordered range
-  scans via a leaf-chain cursor whose cost scales with the result, not the
-  table. Run `sh scripts/run_unit03.sh` for the numbers, or
-  `./bin/u03_merge_chain_bug_demo` for the forensic trap.
+  scans via a leaf-chain cursor whose cost scales with the result.
+- Unit 4 -- the buffer pool: a fixed set of in-memory frames cached over the
+  pager, with a clock (second-chance) replacement policy, pinning, and dirty
+  write-back. The B+Tree sits on it by a change of one type. A lookup still
+  costs 3 logical reads but touches the disk a fraction as often; the same
+  workload runs ~2.5x faster warm. Run `sh scripts/run_unit04.sh` for the
+  numbers, or `./bin/u04_lost_update_demo` for the forensic trap.
