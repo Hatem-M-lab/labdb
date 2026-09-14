@@ -11,8 +11,25 @@ BTree::BTree(BufferPool& pool) : pool_(pool) {
     LeafNode leaf(p);
     leaf.init(root_);
     pool_.write_page(root_, p);
-    pool_.set_btree_root(root_);
+    persist_root();
   }
+}
+
+BTree::BTree(BufferPool& pool, PageId root, std::function<void(PageId)> on_root_changed)
+    : pool_(pool), root_(root), on_root_changed_(std::move(on_root_changed)) {
+  if (root_ == kNullPage) {
+    root_ = pool_.allocate_page();
+    Page p;
+    LeafNode leaf(p);
+    leaf.init(root_);
+    pool_.write_page(root_, p);
+    persist_root();
+  }
+}
+
+void BTree::persist_root() {
+  if (on_root_changed_) on_root_changed_(root_);  // a named table: tell the catalog
+  else pool_.set_btree_root(root_);               // the legacy single global tree
 }
 
 std::optional<Value> BTree::search(Key key) const {
@@ -159,7 +176,7 @@ bool BTree::insert(Key key, Value value) {
     new_root.set_count(1);
     pool_.write_page(new_root_id, rp);
     root_ = new_root_id;
-    pool_.set_btree_root(root_);
+    persist_root();
   }
   return inserted;
 }
@@ -182,7 +199,7 @@ bool BTree::erase(Key key) {
       const PageId only = root.child_at(0);
       pool_.free_page(root_);
       root_ = only;
-      pool_.set_btree_root(root_);
+      persist_root();
     }
   }
   return true;

@@ -16,6 +16,7 @@
 // map. That is a real limitation, noted where it matters, not a bug.)
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -26,7 +27,17 @@ namespace labdb {
 
 class Heap {
  public:
+  // The single, global table used by Units 5's demos: persists its head
+  // through the pager's one heap_head meta slot.
   explicit Heap(BufferPool& pool);
+
+  // A table opened by name through the catalog (Unit 6). `head` is the
+  // table's last known head page (kNullPage for a brand-new table); when
+  // the head moves -- the first insert, or a later prepend -- `on_new_head`
+  // is called with the new page id so the catalog can keep that table's
+  // directory entry current. The heap itself does not know what a catalog
+  // is; it just reports when its own address changes.
+  Heap(BufferPool& pool, PageId head, std::function<void(PageId)> on_new_head);
 
   // Store a record's bytes; returns its RID. The record must fit in one page.
   RID insert(std::span<const std::uint8_t> rec);
@@ -46,6 +57,7 @@ class Heap {
 
   BufferPool& pool_;
   PageId head_;
+  std::function<void(PageId)> on_new_head_;  // null for the legacy ctor
 };
 
 }  // namespace labdb

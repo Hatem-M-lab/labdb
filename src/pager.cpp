@@ -20,6 +20,7 @@ namespace {
 //       32     4  u32 free-list head page id (0 = empty list)
 //       36     4  u32 btree_root  page id (0 = no tree yet)   [Unit 2]
 //       40     4  u32 heap_head   page id (0 = no table yet)  [Unit 5]
+//       44     4  u32 catalog_root page id (0 = no catalog)   [Unit 6]
 //
 constexpr char kMagic[8] = {'l', 'a', 'b', 'd', 'b', '0', '0', '1'};
 constexpr std::size_t kMetaMagicOff = kPageHeaderSize;
@@ -27,6 +28,7 @@ constexpr std::size_t kMetaPageCountOff = kMetaMagicOff + sizeof kMagic;
 constexpr std::size_t kMetaFreelistOff = kMetaPageCountOff + 4;
 constexpr std::size_t kMetaBtreeRootOff = kMetaFreelistOff + 4;
 constexpr std::size_t kMetaHeapHeadOff = kMetaBtreeRootOff + 4;
+constexpr std::size_t kMetaCatalogRootOff = kMetaHeapHeadOff + 4;
 
 off_t page_offset(PageId id) {
   return static_cast<off_t>(id) * static_cast<off_t>(kPageSize);
@@ -61,6 +63,7 @@ Pager::Pager(const std::string& path) {
   freelist_head_ = load_u32(meta.data() + kMetaFreelistOff);
   btree_root_ = load_u32(meta.data() + kMetaBtreeRootOff);
   heap_head_ = load_u32(meta.data() + kMetaHeapHeadOff);
+  catalog_root_ = load_u32(meta.data() + kMetaCatalogRootOff);
   check_that(page_count_ ==
                  static_cast<std::uint32_t>(st.st_size / kPageSize),
              "meta page count disagrees with the file size");
@@ -158,6 +161,11 @@ void Pager::set_heap_head(PageId id) {
   store_meta();
 }
 
+void Pager::set_catalog_root(PageId id) {
+  catalog_root_ = id;
+  store_meta();
+}
+
 void Pager::store_meta() {
   Page meta;
   meta.set_id(0);
@@ -167,6 +175,7 @@ void Pager::store_meta() {
   store_u32(meta.data() + kMetaFreelistOff, freelist_head_);
   store_u32(meta.data() + kMetaBtreeRootOff, btree_root_);
   store_u32(meta.data() + kMetaHeapHeadOff, heap_head_);
+  store_u32(meta.data() + kMetaCatalogRootOff, catalog_root_);
   pwrite_exact(fd_, meta.data(), kPageSize, 0);
 }
 

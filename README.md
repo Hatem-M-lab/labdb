@@ -16,7 +16,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 5 (the record layer). This begins Part II.
+Current state: Unit 6 (the catalog). Part II in progress.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -39,3 +39,10 @@ Current state: Unit 5 (the record layer). This begins Part II.
   RID that packs into the B+Tree's value -- so a key now finds a real typed
   row: 200,000 keyed lookups, 0 mismatches. Run `sh scripts/run_unit05.sh`, or
   `./bin/u05_null_shift_demo` for the forensic trap.
+- Unit 6 -- the catalog: named tables. A fixed-slot directory page maps each
+  table's name to its schema and its own heap head and B+Tree root, bootstrapped
+  from a third meta-page root and durable across reopen. Heap and BTree each
+  gained a small callback so a per-table root persists into the catalog instead
+  of the one global slot. Rows are now inserted and looked up BY TABLE NAME:
+  5 tables, 500k rows, 0 mismatches, at one extra page read per lookup. Run
+  `sh scripts/run_unit06.sh`, or `./bin/u06_prefix_collision_demo` for the trap.

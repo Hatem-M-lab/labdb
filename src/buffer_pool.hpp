@@ -59,6 +59,8 @@ class BufferPool {
   void set_btree_root(PageId id) { pager_.set_btree_root(id); }
   PageId heap_head() const { return pager_.heap_head(); }
   void set_heap_head(PageId id) { pager_.set_heap_head(id); }
+  PageId catalog_root() const { return pager_.catalog_root(); }
+  void set_catalog_root(PageId id) { pager_.set_catalog_root(id); }
 
   // Logical read meter: counts every read the caller requests, hit or miss,
   // so the B+Tree's "pages per lookup" figure is unchanged from Unit 2. The

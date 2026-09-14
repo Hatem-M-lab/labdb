@@ -62,6 +62,11 @@ class Pager {
   PageId heap_head() const { return heap_head_; }
   void set_heap_head(PageId id);
 
+  // The one, well-known root of the table catalog (Unit 6): a fixed-slot
+  // directory page listing every named table and its own heap/tree roots.
+  PageId catalog_root() const { return catalog_root_; }
+  void set_catalog_root(PageId id);
+
   // Instrumentation: how many page reads have happened. Unit 2's headline
   // measurement counts the reads a point lookup costs; this is the meter.
   std::uint64_t read_count() const { return reads_; }
@@ -79,6 +84,7 @@ class Pager {
   PageId freelist_head_ = kNullPage;
   PageId btree_root_ = kNullPage;
   PageId heap_head_ = kNullPage;
+  PageId catalog_root_ = kNullPage;
   std::uint64_t reads_ = 0;
 };
 

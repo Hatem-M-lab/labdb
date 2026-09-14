@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <optional>
 
 #include "page.hpp"
@@ -281,6 +282,14 @@ class BTree {
   // (empty leaf) root if there is none.
   explicit BTree(BufferPool& pool);
 
+  // A table's own index, opened by the catalog (Unit 6). `root` is the
+  // table's last known root (kNullPage plants a fresh empty root); when the
+  // root moves -- a split growing the tree, or a collapse shrinking it --
+  // `on_root_changed` is called with the new root so the catalog can keep
+  // that table's directory entry current. The tree does not know what a
+  // catalog is; it just reports when its own address changes.
+  BTree(BufferPool& pool, PageId root, std::function<void(PageId)> on_root_changed);
+
   // Insert or update. Returns true if the key was newly inserted, false
   // if an existing key's value was overwritten.
   bool insert(Key key, Value value);
@@ -319,8 +328,11 @@ class BTree {
   bool erase_rec(PageId node_id, Key key, bool& underflow);
   void fix_child_underflow(Page& parent_page, std::uint16_t ci);
 
+  void persist_root();  // tell the meta page or the catalog the root moved
+
   BufferPool& pool_;
   PageId root_ = kNullPage;
+  std::function<void(PageId)> on_root_changed_;  // null for the legacy ctor
 };
 
 }  // namespace labdb

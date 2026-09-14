@@ -18,6 +18,7 @@ enum class PageType : std::uint16_t {
   kFree         = 3,  // on the free list (Challenge 1.5)
   kBTreeLeaf    = 4,  // B+Tree leaf: sorted (key,value) pairs (Unit 2)
   kBTreeInternal = 5, // B+Tree internal: keys + child pointers (Unit 2)
+  kCatalog      = 6,  // fixed-slot table directory (Unit 6)
 };
 
 // Header layout, byte-exact:

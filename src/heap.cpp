@@ -7,6 +7,9 @@ namespace labdb {
 
 Heap::Heap(BufferPool& pool) : pool_(pool), head_(pool.heap_head()) {}
 
+Heap::Heap(BufferPool& pool, PageId head, std::function<void(PageId)> on_new_head)
+    : pool_(pool), head_(head), on_new_head_(std::move(on_new_head)) {}
+
 PageId Heap::new_page() {
   const PageId id = pool_.allocate_page();  // a zeroed frame, header id set
   Page pg;
@@ -16,7 +19,8 @@ PageId Heap::new_page() {
   pg.set_next_page(head_);     // link the old head behind this new page
   pool_.write_page(id, pg);
   head_ = id;
-  pool_.set_heap_head(id);     // persist: the table now starts here
+  if (on_new_head_) on_new_head_(id);   // a named table: tell the catalog
+  else pool_.set_heap_head(id);         // the legacy single global table
   return id;
 }
 
