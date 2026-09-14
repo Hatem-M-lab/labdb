@@ -16,7 +16,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 4 (the buffer pool). This is the end of Part I.
+Current state: Unit 5 (the record layer). This begins Part II.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -32,3 +32,10 @@ Current state: Unit 4 (the buffer pool). This is the end of Part I.
   costs 3 logical reads but touches the disk a fraction as often; the same
   workload runs ~2.5x faster warm. Run `sh scripts/run_unit04.sh` for the
   numbers, or `./bin/u04_lost_update_demo` for the forensic trap.
+- Unit 5 -- the record layer: typed, variable-length rows. A schema and a
+  fixed-slot codec (integers, booleans, nulls, text) encode rows to bytes and
+  back, and can project one column without decoding the rest. A table heap
+  stores rows as cells in slotted pages (revived from Unit 1), addressed by a
+  RID that packs into the B+Tree's value -- so a key now finds a real typed
+  row: 200,000 keyed lookups, 0 mismatches. Run `sh scripts/run_unit05.sh`, or
+  `./bin/u05_null_shift_demo` for the forensic trap.

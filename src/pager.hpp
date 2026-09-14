@@ -57,6 +57,11 @@ class Pager {
   PageId btree_root() const { return btree_root_; }
   void set_btree_root(PageId id);
 
+  // A second persistent root, alongside the tree: the head page of the
+  // table heap that stores real rows (Unit 5). kNullPage means no rows yet.
+  PageId heap_head() const { return heap_head_; }
+  void set_heap_head(PageId id);
+
   // Instrumentation: how many page reads have happened. Unit 2's headline
   // measurement counts the reads a point lookup costs; this is the meter.
   std::uint64_t read_count() const { return reads_; }
@@ -73,6 +78,7 @@ class Pager {
   std::uint32_t page_count_ = 0;
   PageId freelist_head_ = kNullPage;
   PageId btree_root_ = kNullPage;
+  PageId heap_head_ = kNullPage;
   std::uint64_t reads_ = 0;
 };
 
