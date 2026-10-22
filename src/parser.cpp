@@ -183,16 +183,12 @@ SelectItem Parser::parse_value(const char* what) {
       advance();
       v.star = true;
     } else {
-      const ColumnRef r = parse_column_ref("a column name");
-      v.table = r.table;
-      v.column = r.column;
+      static_cast<ColumnRef&>(v) = parse_column_ref("a column name");
     }
     expect(TokenType::kRParen, "')' after the aggregate's argument");
     return v;
   }
-  const ColumnRef r = parse_column_ref(what);
-  v.table = r.table;
-  v.column = r.column;
+  static_cast<ColumnRef&>(v) = parse_column_ref(what);
   return v;
 }
 

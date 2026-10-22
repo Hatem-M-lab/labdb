@@ -29,7 +29,7 @@ BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u05_null_shift_demo bin/u06_prefix_collision_demo \
         bin/u07_escape_swallow_demo bin/u08_key_range_demo \
         bin/u09_hash_collapse_demo bin/u09_null_probe \
-        bin/u10_null_as_zero_demo
+        bin/u10_null_as_zero_demo bin/u10_query_probe
 
 all: $(BINS)
 
@@ -78,6 +78,11 @@ bin/u09_null_probe: tools/u09_null_probe.cpp $(ENGINE) $(HDRS) | bin
 # The NULL-as-zero demo runs real aggregates over a real table, so it links
 # the engine; it prints its tables with tests/show.hpp.
 bin/u10_null_as_zero_demo: tools/u10_null_as_zero_demo.cpp $(ENGINE) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+
+# The query probe uses only Parser, plan and run_sql, so it builds against any
+# unit's engine from Unit 9 on (scripts/u10_before_after.sh builds it twice).
+bin/u10_query_probe: tools/u10_query_probe.cpp $(ENGINE) $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
 
 # The buffer-pool trap demo drives a real pool over a file, so unlike the

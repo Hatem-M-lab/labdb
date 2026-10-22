@@ -250,8 +250,8 @@ Executor::Plan Executor::plan(const SelectStmt& s) {
   // Unit 10: a query aggregates when it groups, or when an aggregate appears
   // anywhere above the WHERE. Its rows are then groups, and every value above
   // the HashAggregate is either a grouping column or an aggregate's result.
-  std::vector<SelectItem> items = s.columns;  // the select list, as seen above
-  std::vector<Comparison> having;             // ... HAVING, likewise
+  std::vector<SelectItem> items;   // the select list, as seen above the aggregate
+  std::vector<Comparison> having;  // ... HAVING, likewise
   const bool aggregating =
       !s.group_by.empty() || !s.having.empty() ||
       std::any_of(s.columns.begin(), s.columns.end(), is_aggregate) ||
@@ -309,7 +309,7 @@ Executor::Plan Executor::plan(const SelectStmt& s) {
       out.column = pre[p].column.name;
       return out;
     };
-    for (SelectItem& item : items) item = to_output(item);
+    for (const SelectItem& item : s.columns) items.push_back(to_output(item));
     for (const Comparison& c : s.having) {
       Comparison h = c;
       h.left = to_output(c.left);
@@ -359,14 +359,20 @@ Executor::Plan Executor::plan(const SelectStmt& s) {
       p.column_names.push_back(qualify ? c.table + "." + c.column.name
                                        : c.column.name);
   } else {
+    const std::vector<SelectItem>& shown = aggregating ? items : s.columns;
     std::vector<std::size_t> cols;
     std::string text;
-    for (std::size_t i = 0; i < items.size(); ++i) {
-      cols.push_back(resolve(root->schema(), items[i]));
+    for (std::size_t i = 0; i < shown.size(); ++i) {
+      cols.push_back(resolve(root->schema(), shown[i]));
       const SelectItem& written = s.columns[i];
-      p.column_names.push_back(written.alias.empty() ? value_sql(written) : written.alias);
-      text += (i ? ", " : "") + value_sql(written) +
-              (written.alias.empty() ? "" : " AS " + written.alias);
+      std::string name = value_sql(written);
+      if (i) text += ", ";
+      text += name;
+      if (!written.alias.empty()) {
+        text += " AS " + written.alias;
+        name = written.alias;
+      }
+      p.column_names.push_back(std::move(name));
     }
     root = std::make_unique<Project>(std::move(root), std::move(cols), text);
   }

@@ -84,7 +84,8 @@ void session(Executor& e, const std::string& sql) {
   std::fclose(mem);
   indent(std::string(buf, len), "    ");
   std::free(buf);
-  std::printf("  %zu rows, %.1f ms; the plan, after running:\n", r.row_count(), t * 1e3);
+  std::printf("  %zu row%s, %.1f ms; the plan, after running:\n", r.row_count(),
+              r.row_count() == 1 ? "" : "s", t * 1e3);
   indent(e.explain_last(), "    ");
 }
 

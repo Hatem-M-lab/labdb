@@ -433,6 +433,7 @@ class Sort : public Operator {
   std::size_t next_ = 0;
   std::uint64_t read_ = 0;
   std::size_t held_ = 0;
+  std::uint64_t replaced_ = 0;  // top n: rows that displaced a held row
 };
 
 // LIMIT n: pass on at most n rows, then stop asking for more. A scan below it

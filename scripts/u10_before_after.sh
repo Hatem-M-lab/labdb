@@ -8,7 +8,10 @@
 # (lowest-highest) it moved within over those runs: a difference smaller than
 # that range is noise, not a result.
 #
-# Needs a git clone of the repository (for the unit-09 tag). Takes ~4 minutes.
+# Then, if valgrind is installed, the instructions each build executes per
+# point lookup, stage by stage, which do not move from run to run.
+#
+# Needs a git clone of the repository (for the unit-09 tag). Takes ~6 minutes.
 set -e
 root=$(git rev-parse --show-toplevel)
 cd "$root"
@@ -51,6 +54,34 @@ printf '                         %-28s %s\n' "Unit 9 (tag unit-09)" "this checko
 printf '  INSERTs/s              %-28s %s\n' "$(stat "$tmp/old.txt" 1)" "$(stat "$tmp/new.txt" 1)"
 printf '  point lookups/s        %-28s %s\n' "$(stat "$tmp/old.txt" 2)" "$(stat "$tmp/new.txt" 2)"
 printf '  full-scan rows/s       %-28s %s\n' "$(stat "$tmp/old.txt" 3)" "$(stat "$tmp/new.txt" 3)"
+
+# Instructions per point lookup, by stage -- exact, where the times above
+# move by a fifth from run to run. Needs valgrind; skipped without it. The
+# probe (tools/u10_query_probe.cpp) is built against each tree's engine.
+if command -v valgrind >/dev/null 2>&1; then
+  engine="io pager btree buffer_pool heap catalog parser executor operator"
+  for side in base root; do
+    if [ "$side" = base ]; then src="$tmp/base"; else src="$root"; fi
+    files=""
+    for f in $engine; do files="$files $src/src/$f.cpp"; done
+    g++ -std=c++20 -O2 -I"$src/src" -I"$src/tests" "$root/tools/u10_query_probe.cpp" $files \
+      -o "$tmp/probe_$side"
+  done
+  count() {  # instructions for one run of: probe STAGE N
+    (cd "$tmp" && valgrind --tool=callgrind --callgrind-out-file=/dev/null "$1" "$2" "$3" 2>&1) |
+      awk '/Collected/ { print $NF }'
+  }
+  n=20000
+  echo
+  echo "instructions per point lookup, by stage (valgrind --tool=callgrind, $n queries):"
+  echo
+  printf '                         %-28s %s\n' "Unit 9 (tag unit-09)" "this checkout"
+  for stage in parse plan query; do
+    b=$(( ($(count "$tmp/probe_base" $stage $n) - $(count "$tmp/probe_base" $stage 0)) / n ))
+    c=$(( ($(count "$tmp/probe_root" $stage $n) - $(count "$tmp/probe_root" $stage 0)) / n ))
+    printf '  %-22s %-28s %s (%+d)\n' "$stage" "$b" "$c" $((c - b))
+  done
+fi
 
 git worktree remove --force "$tmp/base"
 rm -rf "$tmp"

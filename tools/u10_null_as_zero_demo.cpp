@@ -16,6 +16,7 @@
 // build: see the Makefile (links the engine).
 #include <unistd.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <random>
 #include <string>
@@ -33,7 +34,7 @@ using labdb::test::print_table;
 
 namespace {
 
-// BUGGY: agg_update with its NULL line missing.
+// BUGGY: agg_update, line for line, with its NULL line missing.
 void update_null_as_zero(const AggSpec& a, AggState& s, const Field& v) {
   if (a.star) {
     ++s.count;
@@ -42,7 +43,11 @@ void update_null_as_zero(const AggSpec& a, AggState& s, const Field& v) {
   ++s.count;  // "a NULL is 0, and 0 changes nothing"
   switch (a.func) {
     case AggFunc::kSum:
-    case AggFunc::kAvg: s.sum += v.i64; break;
+    case AggFunc::kAvg:
+      if ((v.i64 > 0 && s.sum > INT64_MAX - v.i64) || (v.i64 < 0 && s.sum < INT64_MIN - v.i64))
+        throw ExecError{"integer overflow in " + std::string(agg_name(a.func))};
+      s.sum += v.i64;
+      break;
     case AggFunc::kMin: if (s.count == 1 || compare_values(v, s.best) < 0) s.best = v; break;
     case AggFunc::kMax: if (s.count == 1 || compare_values(v, s.best) > 0) s.best = v; break;
     case AggFunc::kCount:
@@ -55,8 +60,9 @@ const char* kQuestion =
     "FROM reviews GROUP BY product ORDER BY AVG(stars) DESC";
 
 // kQuestion's plan, assembled by hand -- the same operators the planner
-// builds for it -- so that the one function under suspicion can be swapped.
-// reviews: (id, product, stars); the aggregate's output is product, #0..#5.
+// builds for it, which main() checks -- so that the one function under
+// suspicion can be swapped. reviews: (id, product, stars); the aggregate's
+// output is product, #0..#5.
 OpPtr question_plan(Catalog& cat, HashAggregate::UpdateFn update) {
   const auto agg = [](AggFunc f, bool star) { return AggSpec{f, star, star ? 0u : 2u, ColType::kInt32}; };
   std::vector<AggSpec> aggs = {agg(AggFunc::kCount, true), agg(AggFunc::kCount, false),
@@ -67,8 +73,11 @@ OpPtr question_plan(Catalog& cat, HashAggregate::UpdateFn update) {
       std::move(aggs),
       "GROUP BY product: COUNT(*), COUNT(stars), SUM(stars), AVG(stars), MIN(stars), MAX(stars)",
       update);
-  return std::make_unique<Sort>(std::move(root), std::vector<SortKey>{{4, true}}, std::nullopt,
+  root = std::make_unique<Sort>(std::move(root), std::vector<SortKey>{{4, true}}, std::nullopt,
                                 "AVG(stars) DESC");
+  return std::make_unique<Project>(
+      std::move(root), std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6},
+      "product, COUNT(*), COUNT(stars), SUM(stars), AVG(stars), MIN(stars), MAX(stars)");
 }
 
 ResultSet run_plan(Operator& root) {
@@ -161,11 +170,12 @@ int main() {
   std::printf("\nthe question:\n  %s\n  %s\n", q.substr(0, cut).c_str(), q.substr(cut + 1).c_str());
 
   // The engine, through SQL -- and the hand-built plan with the engine's own
-  // update function, which must give the same answer, row for row.
+  // update function, which must be the same plan, operator for operator, and
+  // give the same answer, row for row.
   const ResultSet right = e.run_sql(kQuestion);
   OpPtr same = question_plan(cat, agg_update);
   const ResultSet same_rows = run_plan(*same);
-  bool ok = same_rows.rows == right.rows;
+  bool ok = same_rows.rows == right.rows && plan_text(*same) == e.explain_last();
 
   std::printf("\nthe engine's answer (agg_update, with the NULL line):\n");
   print_table(right);
@@ -173,7 +183,7 @@ int main() {
   const ResultSet wrong = run_plan(*buggy);
   std::printf("\nthe same plan with the NULL line missing:\n");
   print_table(wrong);
-  std::printf("\nits plan, after running -- the planner's plan, operator for operator:\n%s",
+  std::printf("\nits plan, after running -- the planner's plan for the question, operator for operator:\n%s",
               plan_text(*buggy).c_str());
 
   std::printf("\nthe three best-rated products:\n");

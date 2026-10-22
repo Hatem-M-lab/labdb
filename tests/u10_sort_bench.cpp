@@ -95,10 +95,11 @@ int main() {
 
   // One Sort, timed in its two phases: open() reads every input row and
   // orders the entries; next() hands the rows out in that order.
-  std::printf("  %-30s %13s %13s %10s   %s\n", "plan", "open()", "next() x all", "total",
-              "rows held");
-  double full = 0;
-  const auto run = [&](const char* label, bool prefixes, std::optional<std::size_t> n) {
+  struct Timed {
+    double open, next, total;
+    std::string detail;
+  };
+  const auto run = [&](bool prefixes, std::optional<std::size_t> n) {
     std::vector<double> to, tn, tt;
     std::string detail;
     for (int r = 0; r < kReps; ++r) {
@@ -119,19 +120,34 @@ int main() {
       detail = s.detail();
     }
     for (auto* v : {&to, &tn, &tt}) std::sort(v->begin(), v->end());
-    const double total = tt[kReps / 2];
-    std::printf("  %-30s %10.1f ms %10.1f ms %7.1f ms   %s", label, to[kReps / 2] * 1e3,
-                tn[kReps / 2] * 1e3, total * 1e3, detail.c_str());
-    if (n) std::printf("   %4.1fx faster", full / total);
-    std::printf("\n");
-    return total;
+    return Timed{to[kReps / 2], tn[kReps / 2], tt[kReps / 2], detail};
   };
-  run("Sort key, no prefixes", false, std::nullopt);
-  full = run("Sort key", true, std::nullopt);
+  std::printf("  %-24s %12s %14s %10s\n", "ORDER BY key", "open()", "next() x all", "total");
+  const Timed slow = run(false, std::nullopt);
+  const Timed full = run(true, std::nullopt);
+  for (const auto& [label, t] : {std::pair{"Sort, no prefixes", slow}, std::pair{"Sort", full}})
+    std::printf("  %-24s %9.1f ms %11.1f ms %7.1f ms\n", label, t.open * 1e3, t.next * 1e3,
+                t.total * 1e3);
+
+  // ORDER BY key LIMIT n. For input in random order, the row read i-th
+  // (i > n) is among the best n so far with probability n/i, so the expected
+  // number of rows that displace a held one is n (H_N - H_n), H the harmonic
+  // numbers -- about n ln(N/n).
+  const auto harmonic = [](std::size_t m) {
+    double h = 0;
+    for (std::size_t i = 1; i <= m; ++i) h += 1.0 / static_cast<double>(i);
+    return h;
+  };
+  std::printf("\n  %-24s %12s %14s %14s %14s\n", "ORDER BY key LIMIT n", "total", "vs full sort",
+              "replacements", "n(H_N - H_n)");
   for (std::size_t n : {10, 100, 1000, 10000, 100000}) {
+    const Timed t = run(true, n);
+    const std::size_t c = t.detail.rfind(", ");
+    const std::string replaced = t.detail.substr(c + 2, t.detail.find(' ', c + 2) - c - 2);
     char label[64];
-    std::snprintf(label, sizeof label, "Sort key (top %zu)", n);
-    run(label, true, n);
+    std::snprintf(label, sizeof label, "top %zu", n);
+    std::printf("  %-24s %9.1f ms %13.1fx %14s %14.0f\n", label, t.total * 1e3, full.total / t.total,
+                replaced.c_str(), static_cast<double>(n) * (harmonic(kRows) - harmonic(n)));
   }
 
   // ---- 200,000 orders on disk, through SQL ----

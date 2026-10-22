@@ -573,6 +573,7 @@ void Sort::open() {
   order_.clear();
   next_ = 0;
   read_ = 0;
+  replaced_ = 0;
   const auto cmp = [this](const Entry& a, const Entry& b) { return entry_before(a, b); };
   child_->open();
   Row r;
@@ -609,6 +610,7 @@ void Sort::open() {
         seq_[w] = s;
         order_.back() = {cand.prefix, w};
         std::push_heap(order_.begin(), order_.end(), cmp);
+        ++replaced_;
       }
     }
     std::sort(order_.begin(), order_.end(), cmp);
@@ -628,7 +630,9 @@ std::string Sort::describe() const {
 }
 
 std::string Sort::detail() const {
-  return "rows held: " + std::to_string(held_) + " of " + std::to_string(read_) + " read";
+  std::string d = "rows held: " + std::to_string(held_) + " of " + std::to_string(read_) + " read";
+  if (limit_) d += ", " + std::to_string(replaced_) + " replacements";
+  return d;
 }
 
 Limit::Limit(OpPtr child, std::uint64_t n) : child_(std::move(child)), n_(n) {
