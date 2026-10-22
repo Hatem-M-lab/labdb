@@ -1,5 +1,6 @@
 #pragma once
-// Lexer -- SQL text into a stream of tokens. Unit 7.
+// Lexer -- SQL text into a stream of tokens. Unit 7; Unit 9 adds JOIN, ON, AND,
+// AS, INNER and the '.' of a qualified column.
 //
 // A single left-to-right pass over the source. Whitespace separates tokens
 // and is otherwise ignored; keywords are recognized case-insensitively but
@@ -138,6 +139,7 @@ class Lexer {
       case ',': t.type = TokenType::kComma; t.text = ","; return t;
       case '*': t.type = TokenType::kStar; t.text = "*"; return t;
       case ';': t.type = TokenType::kSemicolon; t.text = ";"; return t;
+      case '.': t.type = TokenType::kDot; t.text = "."; return t;
       case '=': t.type = TokenType::kEq; t.text = "="; return t;
       case '<':
         if (peek() == '=') { advance(); t.type = TokenType::kLe; t.text = "<="; }
@@ -177,6 +179,11 @@ class Lexer {
     if (u == "NOT") return TokenType::kNot;
     if (u == "TRUE") return TokenType::kTrue;
     if (u == "FALSE") return TokenType::kFalse;
+    if (u == "JOIN") return TokenType::kJoin;
+    if (u == "INNER") return TokenType::kInner;
+    if (u == "ON") return TokenType::kOn;
+    if (u == "AND") return TokenType::kAnd;
+    if (u == "AS") return TokenType::kAs;
     return TokenType::kIdentifier;
   }
 };

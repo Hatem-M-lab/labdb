@@ -1,5 +1,5 @@
 #pragma once
-// Unparse -- an AST back into normalized SQL text. Unit 7.
+// Unparse -- an AST back into normalized SQL text. Unit 7; joins in Unit 9.
 //
 // The reverse of the parser: given a Statement, produce a canonical SQL string
 // for it. This is how the payoff (Challenge 7.5) shows the parse was faithful
@@ -41,6 +41,26 @@ inline std::string literal_sql(const Field& f) {
   }
 }
 
+// Unit 9: the pieces a join query is made of.
+inline std::string column_ref_sql(const ColumnRef& r) {
+  return r.table.empty() ? r.column : r.table + "." + r.column;
+}
+
+inline std::string condition_sql(const std::vector<Comparison>& terms) {
+  std::string out;
+  for (std::size_t i = 0; i < terms.size(); ++i) {
+    const Comparison& c = terms[i];
+    if (i) out += " AND ";
+    out += column_ref_sql(c.left) + " " + op_symbol(c.op) + " " +
+           (c.right ? column_ref_sql(*c.right) : literal_sql(c.literal));
+  }
+  return out;
+}
+
+inline std::string table_ref_sql(const TableRef& t) {
+  return t.alias.empty() ? t.name : t.name + " " + t.alias;
+}
+
 inline std::string unparse(const Statement& s) {
   std::ostringstream os;
   switch (s.kind) {
@@ -71,15 +91,13 @@ inline std::string unparse(const Statement& s) {
       } else {
         for (std::size_t i = 0; i < s.select.columns.size(); ++i) {
           if (i) os << ", ";
-          os << s.select.columns[i];
+          os << column_ref_sql(s.select.columns[i]);
         }
       }
-      os << " FROM " << s.select.table;
-      if (s.select.where) {
-        os << " WHERE " << s.select.where->column << " "
-           << op_symbol(s.select.where->op) << " "
-           << literal_sql(s.select.where->literal);
-      }
+      os << " FROM " << table_ref_sql(s.select.from);
+      for (const JoinClause& j : s.select.joins)
+        os << " JOIN " << table_ref_sql(j.table) << " ON " << condition_sql(j.on);
+      if (!s.select.where.empty()) os << " WHERE " << condition_sql(s.select.where);
       break;
     }
   }

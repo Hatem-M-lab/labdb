@@ -49,6 +49,15 @@ std::vector<Statement> Parser::parse_script() {
   return stmts;
 }
 
+Statement Parser::parse_single() {
+  Statement s = parse_statement();
+  if (check(TokenType::kSemicolon)) advance();
+  if (!at_end())
+    fail(std::string("expected the end of the statement, found '") +
+         peek().text + "'");
+  return s;
+}
+
 Statement Parser::parse_statement() {
   switch (peek().type) {
     case TokenType::kCreate: return parse_create();
@@ -136,9 +145,24 @@ Statement Parser::parse_insert() {
   return s;
 }
 
-Comparison Parser::parse_where() {
+// column_ref = identifier [ "." identifier ]
+ColumnRef Parser::parse_column_ref(const char* what) {
+  ColumnRef r;
+  std::string first = expect(TokenType::kIdentifier, what).text;
+  if (check(TokenType::kDot)) {
+    advance();
+    r.table = std::move(first);
+    r.column = expect(TokenType::kIdentifier, "a column name after '.'").text;
+  } else {
+    r.column = std::move(first);
+  }
+  return r;
+}
+
+// comparison = column_ref op ( literal | column_ref )
+Comparison Parser::parse_comparison() {
   Comparison c;
-  c.column = expect(TokenType::kIdentifier, "a column name in WHERE").text;
+  c.left = parse_column_ref("a column name");
   switch (peek().type) {
     case TokenType::kEq: case TokenType::kNe: case TokenType::kLt:
     case TokenType::kLe: case TokenType::kGt: case TokenType::kGe:
@@ -147,8 +171,34 @@ Comparison Parser::parse_where() {
     default:
       fail("expected a comparison operator (=, <>, <, <=, >, >=)");
   }
-  c.literal = parse_literal();
+  // An identifier on the right is a column; anything else must be a literal.
+  if (check(TokenType::kIdentifier)) c.right = parse_column_ref("a column name");
+  else c.literal = parse_literal();
   return c;
+}
+
+// condition = comparison { "AND" comparison }
+std::vector<Comparison> Parser::parse_condition() {
+  std::vector<Comparison> terms;
+  terms.push_back(parse_comparison());
+  while (check(TokenType::kAnd)) {
+    advance();
+    terms.push_back(parse_comparison());
+  }
+  return terms;
+}
+
+// table_ref = identifier [ [ "AS" ] identifier ]
+TableRef Parser::parse_table_ref() {
+  TableRef t;
+  t.name = expect(TokenType::kIdentifier, "a table name").text;
+  if (check(TokenType::kAs)) {
+    advance();
+    t.alias = expect(TokenType::kIdentifier, "an alias after AS").text;
+  } else if (check(TokenType::kIdentifier)) {
+    t.alias = advance().text;  // `orders o`: an alias without AS
+  }
+  return t;
 }
 
 Statement Parser::parse_select() {
@@ -160,17 +210,26 @@ Statement Parser::parse_select() {
     s.select.star = true;
   } else {
     for (;;) {
-      s.select.columns.push_back(
-          expect(TokenType::kIdentifier, "a column name").text);
+      s.select.columns.push_back(parse_column_ref("a column name"));
       if (check(TokenType::kComma)) { advance(); continue; }
       break;
     }
   }
   expect(TokenType::kFrom, "FROM");
-  s.select.table = expect(TokenType::kIdentifier, "a table name").text;
+  s.select.from = parse_table_ref();
+  // join = [ "INNER" ] "JOIN" table_ref "ON" condition, any number of them
+  while (check(TokenType::kJoin) || check(TokenType::kInner)) {
+    if (check(TokenType::kInner)) advance();
+    expect(TokenType::kJoin, "JOIN after INNER");
+    JoinClause j;
+    j.table = parse_table_ref();
+    expect(TokenType::kOn, "ON and a join condition");
+    j.on = parse_condition();
+    s.select.joins.push_back(std::move(j));
+  }
   if (check(TokenType::kWhere)) {
     advance();
-    s.select.where = parse_where();
+    s.select.where = parse_condition();
   }
   return s;
 }

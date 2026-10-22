@@ -32,9 +32,31 @@
 #include "btree.hpp"
 #include "buffer_pool.hpp"
 #include "common.hpp"
+#include "heap.hpp"
 #include "record.hpp"
 
 namespace labdb {
+
+// A pull-based scan of one table in key order (Unit 9) -- the
+// iterator-shaped twin of Catalog::scan_table. scan_table *pushes* every row
+// into a callback and returns when the table is done, which is all a
+// one-table SELECT needed. An operator pipeline must instead *pull* one row,
+// hand it upward, and resume later; so the scan's state -- the tree cursor and
+// the open heap -- lives in this object between calls.
+class TableCursor {
+ public:
+  // Decode the next row into `out`. False once the table is exhausted.
+  bool next(Row& out);
+  const Schema& schema() const { return schema_; }
+
+ private:
+  friend class Catalog;
+  TableCursor(BufferPool& pool, Schema schema, PageId heap_head, PageId root);
+
+  Schema schema_;
+  Heap heap_;
+  Cursor cur_;
+};
 
 inline constexpr std::size_t kCatalogMaxNameLen = 32;
 inline constexpr std::size_t kCatalogMaxColumns = 8;
@@ -74,6 +96,9 @@ class Catalog {
   // Exact-match existence check and schema lookup.
   bool table_exists(const std::string& name) const;
   Schema schema_of(const std::string& name) const;
+  // Both at once, in one read of the catalog page: the schema, or nothing if
+  // there is no such table -- an expected outcome, so not an exception (Unit 9).
+  std::optional<Schema> find_schema(const std::string& name) const;
   std::vector<std::string> table_names() const;
 
   // Insert a row into a named table. Column 0 is that table's key (a
@@ -91,6 +116,10 @@ class Catalog {
   // falls out of the B+Tree leaf chain for free (Unit 3's Cursor).
   void scan_table(const std::string& table,
                   const std::function<void(const Row&)>& visit);
+
+  // Open a pull-based scan of a table, positioned before its first row
+  // (Unit 9: the operator pipeline's SeqScan reads through one of these).
+  TableCursor open_cursor(const std::string& table);
 
  private:
   struct RawDesc {  // an in-memory read of one on-page slot

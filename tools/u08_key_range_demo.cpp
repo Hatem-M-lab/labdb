@@ -32,8 +32,8 @@ std::size_t buggy_count(Catalog& cat, const std::string& table,
                         const SelectStmt& s) {
   const Schema schema = cat.schema_of(table);
   // "optimize": WHERE on the key column -> one index lookup. (No operator check.)
-  if (s.where && s.where->column == schema.columns[0].name) {
-    auto row = cat.get_by_key(table, static_cast<Key>(s.where->literal.i64));
+  if (!s.where.empty() && s.where[0].left.column == schema.columns[0].name) {
+    auto row = cat.get_by_key(table, static_cast<Key>(s.where[0].literal.i64));
     return row ? 1 : 0;   // a point lookup can only ever return 0 or 1
   }
   // (a real scan would go here for the non-key case)

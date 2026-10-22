@@ -103,6 +103,14 @@ Schema Catalog::schema_of(const std::string& name) const {
   return read_desc(p, i).schema;
 }
 
+std::optional<Schema> Catalog::find_schema(const std::string& name) const {
+  Page p;
+  load_catalog_page(p);
+  const std::size_t i = find_slot(p, name);
+  if (i == npos) return std::nullopt;
+  return read_desc(p, i).schema;
+}
+
 std::vector<std::string> Catalog::table_names() const {
   Page p;
   load_catalog_page(p);
@@ -181,6 +189,28 @@ void Catalog::scan_table(const std::string& table,
     const RID rid = rid_decode(c.value());
     visit(decode(d.schema, heap.get(rid)));
   }
+}
+
+TableCursor::TableCursor(BufferPool& pool, Schema schema, PageId heap_head,
+                         PageId root)
+    : schema_(std::move(schema)),
+      heap_(pool, heap_head, nullptr),
+      cur_(BTree(pool, root, nullptr).seek(0)) {}
+
+bool TableCursor::next(Row& out) {
+  if (!cur_.valid()) return false;
+  out = decode(schema_, heap_.get(rid_decode(cur_.value())));
+  cur_.next();
+  return true;
+}
+
+TableCursor Catalog::open_cursor(const std::string& table) {
+  Page p;
+  load_catalog_page(p);
+  const std::size_t i = find_slot(p, table);
+  check_that(i != npos, "no such table");
+  const RawDesc d = read_desc(p, i);
+  return TableCursor(pool_, d.schema, d.heap_head, d.btree_root);
 }
 
 }  // namespace labdb

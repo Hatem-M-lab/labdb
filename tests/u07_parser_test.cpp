@@ -76,22 +76,22 @@ int main() {
   // ---- SELECT: star, column list, and WHERE ----
   {
     Statement a = parse_one("SELECT * FROM logs");
-    REQUIRE(a.select.star && a.select.table == "logs" && !a.select.where);
+    REQUIRE(a.select.star && a.select.from.name == "logs" && a.select.where.empty());
 
     Statement b = parse_one("SELECT id, name FROM users WHERE id >= 42");
     REQUIRE(!b.select.star);
-    REQUIRE(b.select.columns.size() == 2 && b.select.columns[1] == "name");
-    REQUIRE(b.select.where.has_value());
-    REQUIRE(b.select.where->column == "id");
-    REQUIRE(b.select.where->op == TokenType::kGe);
-    REQUIRE(b.select.where->literal.i64 == 42);
+    REQUIRE(b.select.columns.size() == 2 && b.select.columns[1].column == "name");
+    REQUIRE(b.select.where.size() == 1);
+    REQUIRE(b.select.where[0].left.column == "id");
+    REQUIRE(b.select.where[0].op == TokenType::kGe);
+    REQUIRE(b.select.where[0].literal.i64 == 42);
   }
 
   // ---- case-insensitive keywords, case-sensitive identifiers ----
   {
     Statement s = parse_one("select Name from Users where Name <> 'x'");
-    REQUIRE(s.select.table == "Users");         // identifier case preserved
-    REQUIRE(s.select.columns[0] == "Name");
+    REQUIRE(s.select.from.name == "Users");     // identifier case preserved
+    REQUIRE(s.select.columns[0].column == "Name");
   }
 
   // ---- round-trip stability over a batch ----

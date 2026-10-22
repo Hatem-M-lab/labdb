@@ -2,13 +2,14 @@
 
 > **This is the companion source code for the book**
 > **[Build a SQL Database Engine in C++ — Through Challenges](https://leanpub.com/buildasqldatabaseengineinc)**,
-> covering Part I (Storage, Units 1–4) and Part II (From Bytes to a Query,
-> Units 5–8). Every listing in the book compiles exactly as printed; this
-> repository is that code, one unit at a time.
+> covering Part I (Storage, Units 1–4), Part II (From Bytes to a Query,
+> Units 5–8), and Part III as it is written (Unit 9 onward). Every listing in
+> the book compiles exactly as printed; this repository is that code, one
+> unit at a time.
 >
 > **Following along with the book?** `git checkout unit-04` (or any
-> `unit-01` through `unit-08`) to get the exact code state that unit's
-> chapter shows. The `master` branch always has the latest, full engine.
+> `unit-01` through `unit-09`) to get the exact code state that unit's
+> chapter shows. The `main` branch always has the latest, full engine.
 
 The SQL database engine built, one challenge at a time, in *Build a SQL
 Database Engine in C++ -- Through Challenges*. C++20, standard library and
@@ -26,7 +27,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 8 (the executor). This is the end of Part II -- the engine now runs SQL end to end.
+Current state: Unit 9 (joins), the first unit of Part III -- the engine now answers queries across tables.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -71,3 +72,12 @@ Current state: Unit 8 (the executor). This is the end of Part II -- the engine n
   across all seven layers beneath. 220k rows built and queried in SQL; indexed
   lookups ~2.4us; a cold reopen answers the same. Run `sh scripts/run_unit08.sh`,
   or `./bin/u08_key_range_demo` for the trap.
+- Unit 9 -- joins (Part III begins): the executor rebuilt as a pipeline of
+  open/next/close operators (SeqScan, IndexLookup, Filter, Project), then
+  `JOIN ... ON` with table aliases, qualified columns, and AND. Two joins: a
+  nested loop (any condition, |L| x |R| comparisons) and a hash join (build a
+  table of one side, probe it with the other), proven identical by a
+  differential test. At 100,000 rows a side the hash join is ~1,300x faster.
+  Run `sh scripts/run_unit09.sh` (about 5 minutes), or
+  `./bin/u09_hash_collapse_demo` for the forensic trap: a hash join that is
+  right on every test and 67x slower on one real key column.

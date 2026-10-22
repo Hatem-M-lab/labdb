@@ -3,14 +3,9 @@
 #include <cstdint>
 
 #include "parser.hpp"
+#include "unparse.hpp"
 
 namespace labdb {
-
-std::size_t Executor::column_index(const Schema& s, const std::string& name) {
-  for (std::size_t i = 0; i < s.columns.size(); ++i)
-    if (s.columns[i].name == name) return i;
-  throw ExecError{"no such column: " + name};
-}
 
 // Reconcile a literal from the parser (Int64 for any integer, a placeholder
 // type for NULL) to the column it is going into.
@@ -69,72 +64,189 @@ ResultSet Executor::run_insert(const InsertStmt& s) {
   return {};
 }
 
-bool Executor::where_matches(const Schema& s, const Row& row, const Comparison& w) {
-  const std::size_t ci = column_index(s, w.column);
-  const Field& cell = row[ci];
-  const Field lit = coerce(w.literal, s.columns[ci]);
-  if (cell.is_null) return false;  // NULL matches no comparison (SQL-ish)
+// --------------------------------------------------------------- planning
 
-  // Compare within the column's type.
-  int cmp;
-  if (s.columns[ci].type == ColType::kText) {
-    if (lit.is_null) return false;
-    cmp = cell.text.compare(lit.text) < 0 ? -1 : (cell.text == lit.text ? 0 : 1);
-  } else {
-    const std::int64_t a = cell.i64, b = lit.i64;
-    cmp = a < b ? -1 : (a == b ? 0 : 1);
-  }
-  switch (w.op) {
-    case TokenType::kEq: return cmp == 0;
-    case TokenType::kNe: return cmp != 0;
-    case TokenType::kLt: return cmp < 0;
-    case TokenType::kLe: return cmp <= 0;
-    case TokenType::kGt: return cmp > 0;
-    case TokenType::kGe: return cmp >= 0;
-    default: throw ExecError{"unknown comparison operator"};
+namespace {
+
+// Values compare within a class: integers with integers (INT64 and INT32
+// alike), booleans with booleans, text with text.
+enum class TypeClass { kInteger, kBool, kText };
+
+TypeClass type_class(ColType t) {
+  switch (t) {
+    case ColType::kText: return TypeClass::kText;
+    case ColType::kBool: return TypeClass::kBool;
+    default: return TypeClass::kInteger;
   }
 }
 
-ResultSet Executor::run_select(const SelectStmt& s) {
-  if (!cat_.table_exists(s.table))
-    throw ExecError{"no such table: " + s.table};
-  const Schema schema = cat_.schema_of(s.table);
+}  // namespace
 
-  // Resolve the projection: '*' is every column; otherwise the named columns,
-  // each checked against the schema.
-  std::vector<std::size_t> proj;
-  ResultSet out;
-  if (s.star) {
-    for (std::size_t i = 0; i < schema.columns.size(); ++i) proj.push_back(i);
+BoundComparison Executor::bind(const OutSchema& schema, const Comparison& c) {
+  BoundComparison b;
+  b.left = resolve(schema, c.left);
+  b.op = c.op;
+  const Column& lcol = schema[b.left].column;
+  b.as_text = lcol.type == ColType::kText;
+  if (c.right) {
+    b.right_is_column = true;
+    b.right = resolve(schema, *c.right);
+    const Column& rcol = schema[b.right].column;
+    if (type_class(lcol.type) != type_class(rcol.type))
+      throw ExecError{"cannot compare " + column_ref_sql(c.left) + " (" +
+                      type_keyword(lcol.type) + ") with " +
+                      column_ref_sql(*c.right) + " (" + type_keyword(rcol.type) + ")"};
+  } else if (c.literal.is_null) {
+    // Comparing with NULL is legal SQL; it is simply never true. (Unit 8
+    // typed this NULL as 0 for integer columns, so `age = NULL` matched every
+    // age of 0. eval() now refuses a NULL on either side.)
+    b.literal = Field::Null(lcol.type);
   } else {
-    for (const std::string& name : s.columns) proj.push_back(column_index(schema, name));
+    if (type_class(c.literal.type) != type_class(lcol.type))
+      throw ExecError{"type mismatch: " + column_ref_sql(c.left) + " is " +
+                      type_keyword(lcol.type) + ", compared with " +
+                      literal_sql(c.literal)};
+    b.literal = c.literal;  // integers compare by value at any width
   }
-  for (std::size_t i : proj) out.columns.push_back(schema.columns[i].name);
+  return b;
+}
 
-  // Validate the WHERE column exists up front, so an unknown column errors
-  // even on an empty table.
-  if (s.where) (void)column_index(schema, s.where->column);
-
-  const auto emit = [&](const Row& row) {
-    if (s.where && !where_matches(schema, row, *s.where)) return;
-    std::vector<Field> projected;
-    projected.reserve(proj.size());
-    for (std::size_t i : proj) projected.push_back(row[i]);
-    out.rows.push_back(std::move(projected));
-  };
-
-  // Fast path: WHERE key = literal is a point lookup through the index.
-  // Otherwise, scan the table in key order.
-  if (s.where && s.where->op == TokenType::kEq &&
-      s.where->column == schema.columns[0].name) {
-    const Field k = coerce(s.where->literal, schema.columns[0]);
-    if (!k.is_null) {
-      if (auto row = cat_.get_by_key(s.table, static_cast<Key>(k.i64))) emit(*row);
+OpPtr Executor::plan_source(const TableRef& t, OutSchema schema,
+                            std::vector<const Comparison*>& where) {
+  // Unit 8's plan choice, kept exactly: `key = literal` is answered by one
+  // index lookup, and that is the ONLY comparison a point lookup can answer
+  // (Challenge 8.4). Any other WHERE leaves the table to a full scan.
+  for (std::size_t i = 0; i < where.size(); ++i) {
+    const BoundComparison b = bind(schema, *where[i]);  // validates it
+    if (b.op == TokenType::kEq && !b.right_is_column && b.left == 0) {
+      std::optional<Key> key;
+      if (!b.literal.is_null) key = static_cast<Key>(b.literal.i64);
+      where.erase(where.begin() + static_cast<std::ptrdiff_t>(i));
+      return std::make_unique<IndexLookup>(cat_, t, std::move(schema), key);
     }
-  } else {
-    cat_.scan_table(s.table, emit);
   }
+  return std::make_unique<SeqScan>(cat_, t, std::move(schema));
+}
+
+OpPtr Executor::plan_join(OpPtr left, OpPtr right, const JoinClause& j) {
+  const std::size_t nleft = left->schema().size();
+  const OutSchema both = concat(left->schema(), right->schema());
+
+  // Sort the ON terms: an equality between a column of each side is a key
+  // the hash join can file rows under; anything else is checked per match.
+  std::vector<BoundComparison> all, residual;
+  std::vector<HashJoin::KeyPair> keys;
+  for (const Comparison& c : j.on) {
+    const BoundComparison b = bind(both, c);
+    all.push_back(b);
+    const bool key = b.op == TokenType::kEq && b.right_is_column &&
+                     ((b.left < nleft) != (b.right < nleft));
+    if (key) {
+      const std::size_t l = b.left < nleft ? b.left : b.right;
+      const std::size_t r = b.left < nleft ? b.right : b.left;
+      keys.emplace_back(l, r - nleft);
+    } else {
+      residual.push_back(b);
+    }
+  }
+
+  const std::string text = condition_sql(j.on);
+  JoinAlgorithm algo = join_algorithm_;
+  if (algo == JoinAlgorithm::kAuto)
+    algo = keys.empty() ? JoinAlgorithm::kNestedLoop : JoinAlgorithm::kHash;
+  if (algo == JoinAlgorithm::kHash) {
+    if (keys.empty())
+      throw ExecError{"a hash join needs an ON equality between a column of "
+                      "each table: " + text};
+    return std::make_unique<HashJoin>(std::move(left), std::move(right),
+                                      std::move(keys), std::move(residual), text);
+  }
+  return std::make_unique<NestedLoopJoin>(std::move(left), std::move(right),
+                                          std::move(all), text);
+}
+
+Executor::Plan Executor::plan(const SelectStmt& s) {
+  // Every table must exist, and every label (alias or name) must be distinct,
+  // or `t.col` could mean two different tables. Each table's schema is read
+  // from the catalog once, here, and handed to the operators that need it.
+  std::vector<const TableRef*> tables{&s.from};
+  for (const JoinClause& j : s.joins) tables.push_back(&j.table);
+  std::vector<OutSchema> schemas;
+  for (std::size_t i = 0; i < tables.size(); ++i) {
+    const std::optional<Schema> found = cat_.find_schema(tables[i]->name);
+    if (!found) throw ExecError{"no such table: " + tables[i]->name};
+    for (std::size_t k = 0; k < i; ++k)
+      if (tables[k]->label() == tables[i]->label())
+        throw ExecError{"the name " + tables[i]->label() +
+                        " refers to two tables; give one an alias"};
+    schemas.push_back(table_schema(*found, *tables[i]));
+  }
+
+  std::vector<const Comparison*> where;
+  for (const Comparison& c : s.where) where.push_back(&c);
+
+  // Sources and joins, left-deep: ((from JOIN t1) JOIN t2) ...
+  OpPtr root;
+  if (s.joins.empty()) {
+    root = plan_source(s.from, std::move(schemas[0]), where);
+  } else {
+    root = std::make_unique<SeqScan>(cat_, s.from, std::move(schemas[0]));
+    for (std::size_t i = 0; i < s.joins.size(); ++i)
+      root = plan_join(std::move(root),
+                       std::make_unique<SeqScan>(cat_, s.joins[i].table,
+                                                 std::move(schemas[i + 1])),
+                       s.joins[i]);
+  }
+
+  // The rest of the WHERE, above everything it may refer to.
+  if (!where.empty()) {
+    std::vector<BoundComparison> preds;
+    std::vector<Comparison> shown;
+    for (const Comparison* c : where) {
+      preds.push_back(bind(root->schema(), *c));
+      shown.push_back(*c);
+    }
+    root = std::make_unique<Filter>(std::move(root), std::move(preds),
+                                    condition_sql(shown));
+  }
+
+  // The column list. With joins, `*` names columns by table: o.oid, c.id.
+  Plan p;
+  if (s.star) {
+    const bool qualify = !s.joins.empty();
+    for (const OutColumn& c : root->schema())
+      p.column_names.push_back(qualify ? c.table + "." + c.column.name
+                                       : c.column.name);
+  } else {
+    std::vector<std::size_t> cols;
+    std::string text;
+    for (const ColumnRef& ref : s.columns) {
+      cols.push_back(resolve(root->schema(), ref));
+      p.column_names.push_back(column_ref_sql(ref));
+      text += (text.empty() ? "" : ", ") + column_ref_sql(ref);
+    }
+    root = std::make_unique<Project>(std::move(root), std::move(cols), text);
+  }
+  p.root = std::move(root);
+  return p;
+}
+
+// --------------------------------------------------------------- running
+
+ResultSet Executor::run_select(const SelectStmt& s) {
+  Plan p = plan(s);
+  ResultSet out;
+  out.columns = std::move(p.column_names);
+  p.root->open();
+  Row row;
+  while (p.root->next(row)) out.rows.push_back(std::move(row));
+  p.root->close();
+  last_plan_ = std::move(p.root);
   return out;
+}
+
+std::string Executor::explain_last() const {
+  return last_plan_ ? plan_text(*last_plan_) : "(no SELECT has run)\n";
 }
 
 ResultSet Executor::run(const Statement& stmt) {
@@ -148,7 +260,7 @@ ResultSet Executor::run(const Statement& stmt) {
 
 ResultSet Executor::run_sql(const std::string& sql) {
   Parser p(sql);
-  return run(p.parse_statement());
+  return run(p.parse_single());
 }
 
 }  // namespace labdb

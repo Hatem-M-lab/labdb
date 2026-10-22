@@ -1,5 +1,5 @@
 #pragma once
-// Token -- the atoms of SQL text. Unit 7.
+// Token -- the atoms of SQL text. Unit 7; JOIN, ON, AND, AS and '.' added in Unit 9.
 //
 // The front end turns a string of SQL into an abstract syntax tree in two
 // stages: a lexer that splits the text into tokens (here), and a parser that
@@ -21,10 +21,12 @@ enum class TokenType : std::uint8_t {
   kCreate, kTable, kInsert, kInto, kValues, kSelect, kFrom, kWhere,
   kInt64, kInt32, kBool, kText,   // column types
   kNull, kNot, kTrue, kFalse,
+  kJoin, kInner, kOn, kAnd, kAs,  // Unit 9: joins and conjunctions
   // operators
   kEq, kNe, kLt, kLe, kGt, kGe,   // =  <>  <  <=  >  >=
   // punctuation
   kLParen, kRParen, kComma, kStar, kSemicolon,
+  kDot,     // Unit 9: the '.' in a qualified column, o.customer
   kEnd,     // end of input
 };
 
@@ -57,6 +59,11 @@ inline const char* token_type_name(TokenType t) {
     case TokenType::kNot: return "NOT";
     case TokenType::kTrue: return "TRUE";
     case TokenType::kFalse: return "FALSE";
+    case TokenType::kJoin: return "JOIN";
+    case TokenType::kInner: return "INNER";
+    case TokenType::kOn: return "ON";
+    case TokenType::kAnd: return "AND";
+    case TokenType::kAs: return "AS";
     case TokenType::kEq: return "=";
     case TokenType::kNe: return "<>";
     case TokenType::kLt: return "<";
@@ -68,6 +75,7 @@ inline const char* token_type_name(TokenType t) {
     case TokenType::kComma: return ",";
     case TokenType::kStar: return "*";
     case TokenType::kSemicolon: return ";";
+    case TokenType::kDot: return ".";
     case TokenType::kEnd: return "end of input";
   }
   return "?";
