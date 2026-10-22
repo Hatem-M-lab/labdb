@@ -27,7 +27,7 @@ BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u03_merge_chain_bug_demo bin/u04_lost_update_demo \
         bin/u05_null_shift_demo bin/u06_prefix_collision_demo \
         bin/u07_escape_swallow_demo bin/u08_key_range_demo \
-        bin/u09_hash_collapse_demo
+        bin/u09_hash_collapse_demo bin/u09_null_probe
 
 all: $(BINS)
 
@@ -67,6 +67,10 @@ bin/u08_key_range_demo: tools/u08_key_range_demo.cpp $(ENGINE) $(HDRS) | bin
 
 # The hash-collapse demo runs real joins over real tables, so it links the engine.
 bin/u09_hash_collapse_demo: tools/u09_hash_collapse_demo.cpp $(ENGINE) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+
+# The NULL probe uses only run_sql, so it builds against any unit's executor.
+bin/u09_null_probe: tools/u09_null_probe.cpp $(ENGINE) $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
 
 # The buffer-pool trap demo drives a real pool over a file, so unlike the

@@ -1,11 +1,13 @@
 #!/bin/sh
 # Challenge 9.1: Unit 8's own benchmark (tests/u08_sql_bench.cpp, unchanged
 # since Unit 8), built twice -- against Unit 8's executor, checked out from the
-# unit-08 tag, and against the current one -- and run five times each,
-# alternating, so both builds see the same machine conditions. Prints the
-# median of each measurement for each build.
+# unit-08 tag, and against the current one -- and run RUNS times each
+# (default 9), alternating, so both builds see the same machine conditions.
+# Prints the median of each measurement for each build, and the range
+# (lowest-highest) it moved within over those runs: a difference smaller than
+# that range is noise, not a result.
 #
-# Needs a git clone of the repository (for the unit-08 tag). Takes ~2 minutes.
+# Needs a git clone of the repository (for the unit-08 tag). Takes ~4 minutes.
 set -e
 root=$(git rev-parse --show-toplevel)
 cd "$root"
@@ -27,22 +29,27 @@ measure() {
 
 : > "$tmp/old.txt"
 : > "$tmp/new.txt"
-for i in 1 2 3 4 5; do
+RUNS=${RUNS:-9}
+i=0
+while [ "$i" -lt "$RUNS" ]; do
   measure "$old" >> "$tmp/old.txt"
   measure "$new" >> "$tmp/new.txt"
+  i=$((i + 1))
 done
 
-median() { sort -n | sed -n 3p; }   # the middle of five
-col() { awk -v c="$2" '{ print $c }' "$1" | median; }
+# "median (lowest-highest)" of column $2 of file $1
+stat() {
+  awk -v c="$2" '{ print $c }' "$1" | sort -n | awk '
+    { v[NR] = $1 }
+    END { printf "%d (%d-%d)", v[int((NR + 1) / 2)], v[1], v[NR] }'
+}
 
-oi=$(col "$tmp/old.txt" 1); oq=$(col "$tmp/old.txt" 2); os=$(col "$tmp/old.txt" 3)
-ni=$(col "$tmp/new.txt" 1); nq=$(col "$tmp/new.txt" 2); ns=$(col "$tmp/new.txt" 3)
-echo "Unit 8's benchmark, 5 alternating runs of each build, medians:"
+echo "Unit 8's benchmark, $RUNS alternating runs of each build: median (lowest-highest)"
 echo
-printf '                                Unit 8 executor   Unit 9 operators\n'
-printf '  INSERTs per second            %15s   %16s\n' "$oi" "$ni"
-printf '  point lookups per second      %15s   %16s\n' "$oq" "$nq"
-printf '  full-scan rows per second     %15s   %16s\n' "$os" "$ns"
+printf '                         %-28s %s\n' "Unit 8 executor" "Unit 9 operators"
+printf '  INSERTs/s              %-28s %s\n' "$(stat "$tmp/old.txt" 1)" "$(stat "$tmp/new.txt" 1)"
+printf '  point lookups/s        %-28s %s\n' "$(stat "$tmp/old.txt" 2)" "$(stat "$tmp/new.txt" 2)"
+printf '  full-scan rows/s       %-28s %s\n' "$(stat "$tmp/old.txt" 3)" "$(stat "$tmp/new.txt" 3)"
 
 git worktree remove --force "$tmp/u08"
 rm -rf "$tmp"
