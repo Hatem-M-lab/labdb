@@ -1,5 +1,6 @@
 #pragma once
-// AST -- the shape of a parsed SQL statement. Unit 7; joins added in Unit 9.
+// AST -- the shape of a parsed SQL statement. Unit 7; joins added in Unit 9;
+// aggregates, GROUP BY, HAVING, ORDER BY and LIMIT in Unit 10.
 //
 // The parser turns tokens into one of these. The nodes are deliberately close
 // to what the executor will need: a CreateTable carries a Schema the catalog
@@ -13,6 +14,12 @@
 // table it belongs to (`o.customer`); a comparison's right-hand side can be a
 // column as well as a literal (`o.customer = c.id` is what an ON clause is);
 // and a WHERE or ON is a list of comparisons joined by AND rather than one.
+//
+// Unit 10 let a SELECT summarize. A value in the select list may now be an
+// aggregate -- a function over a column, SUM(o.cents), or over every row,
+// COUNT(*) -- and the statement gains GROUP BY, HAVING, ORDER BY and LIMIT. An
+// aggregate is a column with something applied to it, so its node, SelectItem,
+// extends ColumnRef: code that only needs the column still sees one.
 
 #include <cstdint>
 #include <optional>
@@ -44,11 +51,35 @@ struct ColumnRef {
   std::string column;
 };
 
-// One comparison: a column against a literal (`id >= 42`) or against another
-// column (`o.customer = c.id`). Exactly one of `literal` and `right` is used:
-// `right` is set for column-to-column, and `literal` otherwise.
+// Unit 10: the aggregate functions.
+enum class AggFunc : std::uint8_t { kNone, kCount, kSum, kAvg, kMin, kMax };
+
+inline const char* agg_name(AggFunc f) {
+  switch (f) {
+    case AggFunc::kCount: return "COUNT";
+    case AggFunc::kSum: return "SUM";
+    case AggFunc::kAvg: return "AVG";
+    case AggFunc::kMin: return "MIN";
+    case AggFunc::kMax: return "MAX";
+    case AggFunc::kNone: return "";
+  }
+  return "";
+}
+
+// A value in a select list, a HAVING, or an ORDER BY: a column; an aggregate
+// over a column, SUM(o.cents); or COUNT(*), which counts rows and names none.
+struct SelectItem : ColumnRef {
+  AggFunc func = AggFunc::kNone;  // kNone: the column itself
+  bool star = false;              // COUNT(*)
+  std::string alias;              // `AS name`, in a select list; empty if none
+};
+
+// One comparison: a value against a literal (`id >= 42`) or against a column
+// (`o.customer = c.id`). Exactly one of `literal` and `right` is used: `right`
+// is set for column-to-column, and `literal` otherwise. The left side may be
+// an aggregate (Unit 10) -- the executor allows that only in HAVING.
 struct Comparison {
-  ColumnRef left;
+  SelectItem left;
   TokenType op;                     // one of kEq, kNe, kLt, kLe, kGt, kGe
   std::optional<ColumnRef> right;   // set: column OP column
   Field literal;                    // used when `right` is empty
@@ -69,13 +100,24 @@ struct JoinClause {
   std::vector<Comparison> on;
 };
 
-// SELECT columns FROM table { JOIN table ON condition } [WHERE condition]
+// Unit 10: `ORDER BY value [ASC | DESC]`
+struct OrderItem {
+  SelectItem value;
+  bool desc = false;
+};
+
+// SELECT items FROM table { JOIN table ON condition } [WHERE condition]
+//   [GROUP BY columns] [HAVING condition] [ORDER BY items] [LIMIT n]
 struct SelectStmt {
-  bool star = false;               // SELECT *
-  std::vector<ColumnRef> columns;  // used when !star
-  TableRef from;                   // the first (leftmost) table
-  std::vector<JoinClause> joins;   // in the order written, left to right
-  std::vector<Comparison> where;   // AND-ed; empty means no WHERE
+  bool star = false;                  // SELECT *
+  std::vector<SelectItem> columns;    // used when !star; Unit 10: may be aggregates
+  TableRef from;                      // the first (leftmost) table
+  std::vector<JoinClause> joins;      // in the order written, left to right
+  std::vector<Comparison> where;      // AND-ed; empty means no WHERE
+  std::vector<ColumnRef> group_by;    // Unit 10
+  std::vector<Comparison> having;     // Unit 10: AND-ed, may use aggregates
+  std::vector<OrderItem> order_by;    // Unit 10
+  std::optional<std::int64_t> limit;  // Unit 10
 };
 
 // A parsed statement is exactly one of the three.

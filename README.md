@@ -8,7 +8,7 @@
 > unit at a time.
 >
 > **Following along with the book?** `git checkout unit-04` (or any
-> `unit-01` through `unit-09`) to get the exact code state that unit's
+> `unit-01` through `unit-10`) to get the exact code state that unit's
 > chapter shows. The `main` branch always has the latest, full engine.
 
 The SQL database engine built, one challenge at a time, in *Build a SQL
@@ -27,7 +27,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 9 (joins), the first unit of Part III -- the engine now answers queries across tables.
+Current state: Unit 10 (aggregation) -- the engine joins tables, groups and summarizes them (`GROUP BY`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `HAVING`), and orders and limits results (`ORDER BY`, `LIMIT`).
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive

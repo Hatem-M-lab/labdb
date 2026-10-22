@@ -1,5 +1,6 @@
 #pragma once
-// Record -- typed, variable-length rows encoded into bytes. Unit 5.
+// Record -- typed, variable-length rows encoded into bytes. Unit 5; the
+// computed DOUBLE type added in Unit 10.
 //
 // After four units a stored value is still an opaque 8-byte integer. A real
 // database stores rows: an id, a name, an age, each with a type. This file is
@@ -23,6 +24,7 @@
 // property Challenge 5.4's forensic trap violates: a decoder that skips the
 // slots of null columns reads later columns from the wrong place.
 
+#include <bit>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -37,6 +39,10 @@ enum class ColType : std::uint8_t {
   kInt32 = 2,
   kBool = 3,
   kText = 4,
+  // Unit 10: a computed type, the result of AVG -- an average of integers is
+  // not an integer. The codec can store one (8 bytes, its IEEE-754 bit
+  // pattern), but the grammar does not yet let a table declare a DOUBLE column.
+  kDouble = 5,
 };
 
 inline bool is_fixed(ColType t) { return t != ColType::kText; }
@@ -46,6 +52,7 @@ inline std::size_t fixed_width(ColType t) {
     case ColType::kInt32: return 4;
     case ColType::kBool: return 1;
     case ColType::kText: return 0;
+    case ColType::kDouble: return 8;
   }
   return 0;
 }
@@ -82,19 +89,30 @@ struct Schema {
 struct Field {
   ColType type = ColType::kInt64;
   bool is_null = false;
-  std::int64_t i64 = 0;  // Int64 / Int32 / Bool (0 or 1)
-  std::string text;      // Text
+  union {
+    std::int64_t i64 = 0;  // Int64 / Int32 / Bool (0 or 1)
+    double f64;            // Double (Unit 10) -- shares i64's 8 bytes
+  };
+  std::string text;        // Text
 
   static Field Int64(std::int64_t v) { Field x; x.type=ColType::kInt64; x.i64=v; return x; }
   static Field Int32(std::int32_t v) { Field x; x.type=ColType::kInt32; x.i64=v; return x; }
   static Field Bool(bool v)          { Field x; x.type=ColType::kBool; x.i64=v?1:0; return x; }
   static Field Text(std::string v)   { Field x; x.type=ColType::kText; x.text=std::move(v); return x; }
+  static Field Double(double v)      { Field x; x.type=ColType::kDouble; x.f64=v; return x; }
   static Field Null(ColType t)       { Field x; x.type=t; x.is_null=true; return x; }
+
+  // The value as a double: integers convert, a Double is itself.
+  double as_double() const {
+    return type == ColType::kDouble ? f64 : static_cast<double>(i64);
+  }
 
   bool operator==(const Field& o) const {
     if (is_null != o.is_null) return false;
     if (is_null) return true;
     if (type == ColType::kText) return text == o.text;
+    if (type == ColType::kDouble || o.type == ColType::kDouble)
+      return as_double() == o.as_double();
     return i64 == o.i64;
   }
 };
@@ -126,6 +144,9 @@ inline std::vector<std::uint8_t> encode(const Schema& s, const Row& row) {
         break;
       case ColType::kBool:
         out[off] = v.i64 ? 1 : 0;
+        break;
+      case ColType::kDouble:
+        store_u64(out.data() + off, std::bit_cast<std::uint64_t>(v.f64));
         break;
       case ColType::kText: {
         check_that(v.text.size() <= 0xFFFF, "text too long for a 16-bit length");
@@ -164,6 +185,7 @@ inline Field read_at(const Schema& s, std::span<const std::uint8_t> rec,
     check_that(slot_off + w <= rec.size(), "record truncated mid-column");
     if (t == ColType::kInt64) v.i64 = static_cast<std::int64_t>(load_u64(rec.data() + slot_off));
     else if (t == ColType::kInt32) v.i64 = static_cast<std::int32_t>(load_u32(rec.data() + slot_off));
+    else if (t == ColType::kDouble) v.f64 = std::bit_cast<double>(load_u64(rec.data() + slot_off));
     else v.i64 = rec[slot_off] ? 1 : 0;  // Bool
   }
   return v;

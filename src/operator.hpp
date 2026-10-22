@@ -1,5 +1,6 @@
 #pragma once
-// Operators -- a query plan as a tree of iterators. Unit 9.
+// Operators -- a query plan as a tree of iterators. Unit 9; aggregation,
+// sorting and LIMIT added in Unit 10.
 //
 // Unit 8 ran a SELECT as one function: scan the table, and for each row test
 // the WHERE and copy out the requested columns. That shape cannot hold a
@@ -66,10 +67,16 @@ struct BoundComparison {
   std::size_t left = 0;
   TokenType op = TokenType::kEq;
   bool as_text = false;          // compare as strings (else by integer value)
+  bool as_double = false;        // Unit 10: compare as doubles (a side is DOUBLE)
   bool right_is_column = false;
   std::size_t right = 0;         // a column position, when right_is_column
   Field literal;                 // otherwise
 };
+
+// Unit 10: -1, 0, or 1 for two non-NULL values of one column's type: text by
+// bytes, DOUBLE by value, everything else by integer value. Used by MIN, MAX,
+// GROUP BY's key comparison, and ORDER BY.
+int compare_values(const Field& a, const Field& b);
 
 // Evaluate against one row. A NULL on either side satisfies no comparison:
 // in SQL, NULL = NULL is not true, and neither is NULL < 5.
@@ -289,6 +296,169 @@ class HashJoin : public Operator {
   bool probing_ = false;
   std::uint64_t probe_hash_ = 0;
   std::uint32_t pos_ = 0, end_ = 0;
+};
+
+// ------------------------------------------------------ aggregation (Unit 10)
+
+// One aggregate to compute: which function, over which input column.
+struct AggSpec {
+  AggFunc func = AggFunc::kCount;
+  bool star = false;               // COUNT(*): reads no column
+  std::size_t col = 0;             // input position of the argument
+  ColType type = ColType::kInt64;  // the argument's type: MIN and MAX return it
+};
+
+// The running state of one aggregate in one group.
+struct AggState {
+  std::int64_t count = 0;  // values seen -- or rows, for COUNT(*)
+  std::int64_t sum = 0;    // SUM and AVG
+  Field best;              // MIN and MAX: the best value seen so far
+};
+
+// Fold one input value into a state. Every aggregate except COUNT(*) skips a
+// NULL: COUNT(col) counts values, not rows, and a missing value is not a 0 to
+// be summed, averaged, or compared. Challenge 10.4 is what forgetting that
+// costs.
+void agg_update(const AggSpec& a, AggState& s, const Field& v);
+
+// A finished group's answer. Over no values at all, COUNT is 0 and every other
+// aggregate is NULL.
+Field agg_result(const AggSpec& a, const AggState& s);
+
+// agg_result's type: COUNT and SUM are INT64, AVG is DOUBLE, MIN and MAX keep
+// their argument's type.
+ColType agg_type(const AggSpec& a);
+
+// GROUP BY through a hash table. open() reads the whole input and folds each
+// row into its group's states; next() then hands out one row per group, in the
+// order the groups first appeared: the group's key columns, then each
+// aggregate's result, named "#0", "#1", ... for the planner to refer to. With
+// no GROUP BY columns there is exactly one group, even over an empty input.
+// Rows whose keys are NULL form one group, as SQL's GROUP BY requires.
+//
+// `update` folds one value into one state; it is agg_update everywhere except
+// in Challenge 10.4's demonstration, which swaps in the version with the bug.
+class HashAggregate : public Operator {
+ public:
+  using UpdateFn = void (*)(const AggSpec&, AggState&, const Field&);
+  HashAggregate(OpPtr child, std::vector<std::size_t> group_cols,
+                std::vector<AggSpec> aggs, std::string text,
+                UpdateFn update = agg_update);
+  void open() override;
+  void close() override {}  // the input was read to its end, and closed, in open()
+  std::string describe() const override { return "HashAggregate " + text_; }
+  std::string detail() const override;
+  std::vector<const Operator*> children() const override { return {child_.get()}; }
+  std::size_t groups() const { return keys_.size(); }
+  std::size_t slots() const { return slots_.size(); }
+  std::size_t bytes() const;  // what the table holds, by sizeof (the allocator's overhead aside)
+
+ protected:
+  bool produce(Row& out) override;
+
+ private:
+  std::uint64_t key_hash(const Row& row) const;
+  bool same_key(const Row& row, std::uint32_t g) const;
+  std::uint32_t find_or_add(const Row& row);
+  void grow();
+
+  OpPtr child_;
+  std::vector<std::size_t> group_cols_;
+  std::vector<AggSpec> aggs_;
+  std::string text_;
+  UpdateFn update_;
+  // Group g: its key fields keys_[g], its key's raw hash hashes_[g], and its
+  // aggregate states at states_[g * aggs_.size()] onward.
+  std::vector<Row> keys_;
+  std::vector<std::uint64_t> hashes_;
+  std::vector<AggState> states_;
+  std::vector<std::uint32_t> slots_;  // open addressing: group id + 1, 0 if empty
+  std::size_t mask_ = 0;
+  std::size_t longest_probe_ = 0;
+  std::size_t next_ = 0;  // the next group to hand out
+};
+
+// ------------------------------------------------- ORDER BY and LIMIT (Unit 10)
+
+struct SortKey {
+  std::size_t col = 0;
+  bool desc = false;
+};
+
+// ORDER BY: read the whole input, then hand it out in order. NULLs sort after
+// every value ascending and before every value descending, as PostgreSQL does
+// by default, and rows that tie keep their input order, so the output is fully
+// determined. With a limit n, only the best n rows are ever kept -- a bounded
+// heap, O(N log n) time and O(n) memory, instead of sorting all N rows.
+//
+// What gets sorted is not the rows but small entries: a row's index and its
+// first sort key folded into 64 bits whose unsigned order is the sort order
+// (PostgreSQL's tuplesort carries its first key beside each tuple the same
+// way). Two entries with different prefixes are ordered without touching
+// their rows; only equal prefixes fall through to the full comparison.
+// `prefixes` = false makes every prefix 0, so every comparison goes to the
+// rows -- Challenge 10.3 measures the difference.
+class Sort : public Operator {
+ public:
+  Sort(OpPtr child, std::vector<SortKey> keys, std::optional<std::size_t> limit,
+       std::string text, bool prefixes = true);
+  void open() override;
+  void close() override {}  // the input was read to its end, and closed, in open()
+  std::string describe() const override;
+  std::string detail() const override;
+  std::vector<const Operator*> children() const override { return {child_.get()}; }
+
+ protected:
+  bool produce(Row& out) override;
+
+ private:
+  struct Entry {
+    std::uint64_t prefix;  // the first key, folded: unsigned order = sort order
+    std::uint32_t row;     // index into rows_
+  };
+  std::uint64_t prefix_of(const Row& r) const;
+  bool before(std::uint32_t a, std::uint32_t b) const;  // rows_[a] sorts first?
+  bool entry_before(const Entry& a, const Entry& b) const {
+    return a.prefix != b.prefix ? a.prefix < b.prefix : before(a.row, b.row);
+  }
+
+  OpPtr child_;
+  std::vector<SortKey> keys_;
+  std::optional<std::size_t> limit_;
+  std::string text_;
+  bool prefixes_;
+  std::vector<Row> rows_;
+  std::vector<std::uint64_t> seq_;  // each held row's input position: the tie-break
+  std::vector<Entry> order_;
+  std::size_t next_ = 0;
+  std::uint64_t read_ = 0;
+  std::size_t held_ = 0;
+};
+
+// LIMIT n: pass on at most n rows, then stop asking for more. A scan below it
+// stops reading after n rows; a sort below it has already read everything.
+class Limit : public Operator {
+ public:
+  Limit(OpPtr child, std::uint64_t n);
+  void open() override {
+    child_->open();
+    given_ = 0;
+  }
+  void close() override { child_->close(); }
+  std::string describe() const override { return "Limit " + std::to_string(n_); }
+  std::vector<const Operator*> children() const override { return {child_.get()}; }
+
+ protected:
+  bool produce(Row& out) override {
+    if (given_ >= n_ || !child_->next(out)) return false;
+    ++given_;
+    return true;
+  }
+
+ private:
+  OpPtr child_;
+  std::uint64_t n_;
+  std::uint64_t given_ = 0;
 };
 
 // The joined row: all of the left row's fields, then all of the right's.

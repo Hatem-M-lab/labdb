@@ -1,6 +1,7 @@
 #pragma once
 // Lexer -- SQL text into a stream of tokens. Unit 7; Unit 9 adds JOIN, ON, AND,
-// AS, INNER and the '.' of a qualified column.
+// AS, INNER and the '.' of a qualified column; Unit 10 adds GROUP, BY, HAVING,
+// ORDER, ASC, DESC, LIMIT, and decimal literals like 3.5.
 //
 // A single left-to-right pass over the source. Whitespace separates tokens
 // and is otherwise ignored; keywords are recognized case-insensitively but
@@ -13,6 +14,7 @@
 // O'Brien. Getting that escape right is Challenge 7.4's forensic trap.
 
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -94,9 +96,20 @@ class Lexer {
     return t;
   }
 
+  // Digits, and optionally a '.' followed by more digits (Unit 10): `42` is an
+  // integer, `3.5` a decimal. A '.' NOT followed by a digit is left alone, so
+  // it can still be the dot of a qualified name.
   Token lex_number(Token& t) {
     const std::size_t start = pos_;
     while (!done() && std::isdigit((unsigned char)peek())) advance();
+    if (peek() == '.' && std::isdigit((unsigned char)peek2())) {
+      advance();  // the '.'
+      while (!done() && std::isdigit((unsigned char)peek())) advance();
+      t.text = src_.substr(start, pos_ - start);
+      t.type = TokenType::kFloatLiteral;
+      std::from_chars(t.text.data(), t.text.data() + t.text.size(), t.float_val);
+      return t;
+    }
     t.text = src_.substr(start, pos_ - start);
     t.type = TokenType::kIntLiteral;
     t.int_val = std::stoll(t.text);
@@ -184,6 +197,13 @@ class Lexer {
     if (u == "ON") return TokenType::kOn;
     if (u == "AND") return TokenType::kAnd;
     if (u == "AS") return TokenType::kAs;
+    if (u == "GROUP") return TokenType::kGroup;
+    if (u == "BY") return TokenType::kBy;
+    if (u == "HAVING") return TokenType::kHaving;
+    if (u == "ORDER") return TokenType::kOrder;
+    if (u == "ASC") return TokenType::kAsc;
+    if (u == "DESC") return TokenType::kDesc;
+    if (u == "LIMIT") return TokenType::kLimit;
     return TokenType::kIdentifier;
   }
 };

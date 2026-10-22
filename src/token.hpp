@@ -1,5 +1,6 @@
 #pragma once
-// Token -- the atoms of SQL text. Unit 7; JOIN, ON, AND, AS and '.' added in Unit 9.
+// Token -- the atoms of SQL text. Unit 7; JOIN, ON, AND, AS and '.' added in
+// Unit 9; GROUP BY, HAVING, ORDER BY, LIMIT and decimal literals in Unit 10.
 //
 // The front end turns a string of SQL into an abstract syntax tree in two
 // stages: a lexer that splits the text into tokens (here), and a parser that
@@ -16,12 +17,14 @@ enum class TokenType : std::uint8_t {
   // literals and names
   kIdentifier,  // a table or column name (case-sensitive)
   kIntLiteral,  // 42
+  kFloatLiteral,  // 3.5  (Unit 10: compared against AVG's results)
   kStrLiteral,  // 'hello'  (value already unescaped)
   // keywords (case-insensitive in the source)
   kCreate, kTable, kInsert, kInto, kValues, kSelect, kFrom, kWhere,
   kInt64, kInt32, kBool, kText,   // column types
   kNull, kNot, kTrue, kFalse,
   kJoin, kInner, kOn, kAnd, kAs,  // Unit 9: joins and conjunctions
+  kGroup, kBy, kHaving, kOrder, kAsc, kDesc, kLimit,  // Unit 10
   // operators
   kEq, kNe, kLt, kLe, kGt, kGe,   // =  <>  <  <=  >  >=
   // punctuation
@@ -34,6 +37,7 @@ struct Token {
   TokenType type = TokenType::kEnd;
   std::string text;         // the exact source slice (or unescaped string value)
   std::int64_t int_val = 0; // valid when type == kIntLiteral
+  double float_val = 0;     // valid when type == kFloatLiteral
   std::size_t line = 1;     // 1-based line, for error carets
   std::size_t col = 1;      // 1-based column of the token's first character
 };
@@ -42,6 +46,7 @@ inline const char* token_type_name(TokenType t) {
   switch (t) {
     case TokenType::kIdentifier: return "identifier";
     case TokenType::kIntLiteral: return "integer";
+    case TokenType::kFloatLiteral: return "decimal";
     case TokenType::kStrLiteral: return "string";
     case TokenType::kCreate: return "CREATE";
     case TokenType::kTable: return "TABLE";
@@ -64,6 +69,13 @@ inline const char* token_type_name(TokenType t) {
     case TokenType::kOn: return "ON";
     case TokenType::kAnd: return "AND";
     case TokenType::kAs: return "AS";
+    case TokenType::kGroup: return "GROUP";
+    case TokenType::kBy: return "BY";
+    case TokenType::kHaving: return "HAVING";
+    case TokenType::kOrder: return "ORDER";
+    case TokenType::kAsc: return "ASC";
+    case TokenType::kDesc: return "DESC";
+    case TokenType::kLimit: return "LIMIT";
     case TokenType::kEq: return "=";
     case TokenType::kNe: return "<>";
     case TokenType::kLt: return "<";

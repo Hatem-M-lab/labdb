@@ -1,5 +1,6 @@
 #include "parser.hpp"
 
+#include <cctype>
 #include <sstream>
 
 namespace labdb {
@@ -118,6 +119,9 @@ Field Parser::parse_literal() {
     case TokenType::kStrLiteral:
       advance();
       return Field::Text(t.text);
+    case TokenType::kFloatLiteral:
+      advance();
+      return Field::Double(t.float_val);
     case TokenType::kTrue: advance(); return Field::Bool(true);
     case TokenType::kFalse: advance(); return Field::Bool(false);
     case TokenType::kNull:
@@ -159,10 +163,43 @@ ColumnRef Parser::parse_column_ref(const char* what) {
   return r;
 }
 
-// comparison = column_ref op ( literal | column_ref )
+// value = column_ref | aggregate
+// aggregate = ( "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" ) "(" ( "*" | column_ref ) ")"
+SelectItem Parser::parse_value(const char* what) {
+  SelectItem v;
+  if (check(TokenType::kIdentifier) && peek_next().type == TokenType::kLParen) {
+    std::string name = peek().text;
+    for (char& ch : name) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    if (name == "COUNT") v.func = AggFunc::kCount;
+    else if (name == "SUM") v.func = AggFunc::kSum;
+    else if (name == "AVG") v.func = AggFunc::kAvg;
+    else if (name == "MIN") v.func = AggFunc::kMin;
+    else if (name == "MAX") v.func = AggFunc::kMax;
+    else fail("unknown function '" + peek().text + "' (the aggregates are COUNT, SUM, AVG, MIN and MAX)");
+    advance();  // the function's name
+    expect(TokenType::kLParen, "'('");
+    if (check(TokenType::kStar)) {
+      if (v.func != AggFunc::kCount) fail("only COUNT can take *");
+      advance();
+      v.star = true;
+    } else {
+      const ColumnRef r = parse_column_ref("a column name");
+      v.table = r.table;
+      v.column = r.column;
+    }
+    expect(TokenType::kRParen, "')' after the aggregate's argument");
+    return v;
+  }
+  const ColumnRef r = parse_column_ref(what);
+  v.table = r.table;
+  v.column = r.column;
+  return v;
+}
+
+// comparison = value op ( literal | column_ref )
 Comparison Parser::parse_comparison() {
   Comparison c;
-  c.left = parse_column_ref("a column name");
+  c.left = parse_value("a column name");
   switch (peek().type) {
     case TokenType::kEq: case TokenType::kNe: case TokenType::kLt:
     case TokenType::kLe: case TokenType::kGt: case TokenType::kGe:
@@ -210,7 +247,12 @@ Statement Parser::parse_select() {
     s.select.star = true;
   } else {
     for (;;) {
-      s.select.columns.push_back(parse_column_ref("a column name"));
+      SelectItem item = parse_value("a column name");
+      if (check(TokenType::kAs)) {  // Unit 10: `AS alias` -- AS is required
+        advance();
+        item.alias = expect(TokenType::kIdentifier, "an alias after AS").text;
+      }
+      s.select.columns.push_back(std::move(item));
       if (check(TokenType::kComma)) { advance(); continue; }
       break;
     }
@@ -230,6 +272,41 @@ Statement Parser::parse_select() {
   if (check(TokenType::kWhere)) {
     advance();
     s.select.where = parse_condition();
+  }
+  // Unit 10: GROUP BY, HAVING, ORDER BY, LIMIT -- each optional, in this order
+  if (check(TokenType::kGroup)) {
+    advance();
+    expect(TokenType::kBy, "BY after GROUP");
+    for (;;) {
+      s.select.group_by.push_back(parse_column_ref("a column name to group by"));
+      if (check(TokenType::kComma)) { advance(); continue; }
+      break;
+    }
+  }
+  if (check(TokenType::kHaving)) {
+    advance();
+    s.select.having = parse_condition();
+  }
+  if (check(TokenType::kOrder)) {
+    advance();
+    expect(TokenType::kBy, "BY after ORDER");
+    for (;;) {
+      OrderItem o;
+      o.value = parse_value("a column name to order by");
+      if (check(TokenType::kAsc)) {
+        advance();
+      } else if (check(TokenType::kDesc)) {
+        advance();
+        o.desc = true;
+      }
+      s.select.order_by.push_back(std::move(o));
+      if (check(TokenType::kComma)) { advance(); continue; }
+      break;
+    }
+  }
+  if (check(TokenType::kLimit)) {
+    advance();
+    s.select.limit = expect(TokenType::kIntLiteral, "a row count after LIMIT").int_val;
   }
   return s;
 }

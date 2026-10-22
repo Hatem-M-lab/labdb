@@ -11,15 +11,18 @@
 //
 // Since Unit 9 a SELECT is not executed directly. It is first *planned* --
 // turned into a tree of operators (operator.hpp): scans at the leaves, a join
-// for every JOIN, a Filter for the WHERE, a Project for the column list --
-// and then the root of that tree is drained, one row per next(). Planning is
+// for every JOIN, a Filter for the WHERE, and, since Unit 10, a HashAggregate
+// for GROUP BY and the aggregates, a Filter for HAVING, a Sort for ORDER BY
+// and a Limit for LIMIT, with a Project for the column list on top -- and
+// then the root of that tree is drained, one row per next(). Planning is
 // where every name is resolved and every literal typed, once, so that
 // running the plan is nothing but moving rows.
 //
 // The executor is where *semantic* errors live, as opposed to the parser's
 // syntactic ones: a table that does not exist, a column that is not in the
 // schema or is ambiguous between two tables, a value of the wrong type, the
-// wrong number of values for an INSERT. The parser guarantees the statement
+// wrong number of values for an INSERT, a column that is neither grouped nor
+// aggregated (Unit 10). The parser guarantees the statement
 // is well-formed; the executor guarantees it is meaningful against the
 // actual catalog.
 
