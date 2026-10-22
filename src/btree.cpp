@@ -15,8 +15,9 @@ BTree::BTree(BufferPool& pool) : pool_(pool) {
   }
 }
 
-BTree::BTree(BufferPool& pool, PageId root, std::function<void(PageId)> on_root_changed)
-    : pool_(pool), root_(root), on_root_changed_(std::move(on_root_changed)) {
+BTree::BTree(BufferPool& pool, PageId root, std::function<void(PageId)> on_root_changed,
+             bool unique)
+    : pool_(pool), root_(root), on_root_changed_(std::move(on_root_changed)), unique_(unique) {
   if (root_ == kNullPage) {
     root_ = pool_.allocate_page();
     Page p;
@@ -33,6 +34,7 @@ void BTree::persist_root() {
 }
 
 std::optional<Value> BTree::search(Key key) const {
+  check_that(unique_, "search() names one entry; a non-unique tree is read with seek()");
   PageId node_id = root_;
   Page p;
   for (;;) {
@@ -62,8 +64,8 @@ int BTree::height() const {
   }
 }
 
-std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
-                                              Value value, bool& inserted) {
+std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key, Value value,
+                                              bool overwrite, bool& inserted) {
   Page p;
   pool_.read_page(node_id, p);
 
@@ -71,14 +73,19 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
   if (p.type() == PageType::kBTreeLeaf) {
     LeafNode leaf(p);
     const std::uint16_t i = leaf.lower_bound(key);
-    if (i < leaf.count() && leaf.key_at(i) == key) {
-      leaf.set_value_at(i, value);          // key exists: update in place
-      pool_.write_page(node_id, p);
+    if (unique_ && i < leaf.count() && leaf.key_at(i) == key) {
+      if (overwrite) {
+        leaf.set_value_at(i, value);        // key exists: update in place
+        pool_.write_page(node_id, p);
+      }
       inserted = false;
       return std::nullopt;
     }
+    // (Unit 11: in a non-unique tree a duplicate goes after the entries with
+    // its key, so that equal keys keep the order they were inserted in.)
+    const auto at = [&](const LeafNode& l) { return unique_ ? l.lower_bound(key) : l.upper_bound(key); };
     if (!leaf.is_full()) {
-      leaf.insert_at(i, key, value);
+      leaf.insert_at(at(leaf), key, value);
       pool_.write_page(node_id, p);
       inserted = true;
       return std::nullopt;
@@ -97,9 +104,9 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
     leaf.set_next(right_id);
 
     if (key < right.key_at(0))
-      leaf.insert_at(leaf.lower_bound(key), key, value);
+      leaf.insert_at(at(leaf), key, value);
     else
-      right.insert_at(right.lower_bound(key), key, value);
+      right.insert_at(at(right), key, value);
 
     // COPY-UP: the separator is the smallest key of the right leaf, and it
     // STAYS in the right leaf. (Moving it up instead -- the B-Tree reflex
@@ -115,7 +122,7 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
   InternalNode node(p);
   const std::uint16_t ci = node.child_index_for(key);
   const PageId child_id = node.child_at(ci);
-  auto child_split = insert_rec(child_id, key, value, inserted);
+  auto child_split = insert_rec(child_id, key, value, overwrite, inserted);
   if (!child_split) return std::nullopt;  // child absorbed it
 
   if (!node.is_full()) {
@@ -160,9 +167,12 @@ std::optional<BTree::Split> BTree::insert_rec(PageId node_id, Key key,
   return Split{median, right_id};  // median moves up to our parent
 }
 
-bool BTree::insert(Key key, Value value) {
+bool BTree::insert(Key key, Value value) { return insert_with(key, value, true); }
+bool BTree::insert_new(Key key, Value value) { return insert_with(key, value, false); }
+
+bool BTree::insert_with(Key key, Value value, bool overwrite) {
   bool inserted = false;
-  auto split = insert_rec(root_, key, value, inserted);
+  auto split = insert_rec(root_, key, value, overwrite, inserted);
   if (split) {
     // The root split: grow a new internal root one level up. This is the
     // only place the tree gains height.
@@ -184,6 +194,7 @@ bool BTree::insert(Key key, Value value) {
 // ============================ deletion (Unit 3) ============================
 
 bool BTree::erase(Key key) {
+  check_that(unique_, "erase() on a non-unique tree (no statement deletes a row yet)");
   bool underflow = false;
   const bool found = erase_rec(root_, key, underflow);
   if (!found) return false;
@@ -384,7 +395,9 @@ void Cursor::next() {
   settle();
 }
 
-Cursor BTree::seek(Key lo) const {
+Cursor BTree::seek(Key lo) const { return seek(lo, unique_ ? rightmost_child : leftmost_child); }
+
+Cursor BTree::seek(Key lo, ChildRule rule) const {
   Cursor c(pool_);
   PageId id = root_;
   Page p;
@@ -392,12 +405,30 @@ Cursor BTree::seek(Key lo) const {
     pool_.read_page(id, p);
     if (p.type() == PageType::kBTreeLeaf) break;
     InternalNode node(p);
-    id = node.child_at(node.child_index_for(lo));
+    id = node.child_at(rule(node, lo));
   }
   c.leaf_ = p;
   c.leaf_id_ = id;
   c.idx_ = LeafNode(p).lower_bound(lo);
   c.settle();
+  return c;
+}
+
+Cursor BTree::last() const {
+  Cursor c(pool_);
+  PageId id = root_;
+  Page p;
+  for (;;) {  // the rightmost child, all the way down
+    pool_.read_page(id, p);
+    if (p.type() == PageType::kBTreeLeaf) break;
+    InternalNode node(p);
+    id = node.child_at(node.count());
+  }
+  const std::uint16_t n = LeafNode(p).count();
+  c.leaf_ = p;
+  c.leaf_id_ = id;
+  c.idx_ = n ? static_cast<std::uint16_t>(n - 1) : 0;
+  c.settle();  // an empty root leaf: no next leaf either, so invalid
   return c;
 }
 

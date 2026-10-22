@@ -96,7 +96,8 @@ Column Parser::parse_column_def() {
 
 Statement Parser::parse_create() {
   expect(TokenType::kCreate, "CREATE");
-  expect(TokenType::kTable, "TABLE");
+  if (check(TokenType::kIndex)) return parse_create_index();  // Unit 11
+  expect(TokenType::kTable, "TABLE or INDEX");
   Statement s;
   s.kind = Statement::Kind::kCreate;
   s.create.table = expect(TokenType::kIdentifier, "a table name").text;
@@ -107,6 +108,19 @@ Statement Parser::parse_create() {
     break;
   }
   expect(TokenType::kRParen, "')' after the column list");
+  return s;
+}
+
+// Unit 11: create_index = "CREATE" "INDEX" "ON" identifier "(" identifier ")"
+Statement Parser::parse_create_index() {
+  expect(TokenType::kIndex, "INDEX");
+  expect(TokenType::kOn, "ON and the table to index");
+  Statement s;
+  s.kind = Statement::Kind::kCreateIndex;
+  s.create_index.table = expect(TokenType::kIdentifier, "a table name").text;
+  expect(TokenType::kLParen, "'(' before the column to index");
+  s.create_index.column = expect(TokenType::kIdentifier, "a column name").text;
+  expect(TokenType::kRParen, "')' after the column (an index has one column)");
   return s;
 }
 

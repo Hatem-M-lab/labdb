@@ -119,6 +119,31 @@ struct Field {
 
 using Row = std::vector<Field>;
 
+// Unit 11: a value folded into 64 bits whose unsigned order is the value's
+// order -- an integer with its sign bit flipped, a BOOL as 0 or 1, a DOUBLE by
+// the usual bit trick, TEXT by its first 8 bytes. It is Unit 10's sort prefix,
+// and now the key of every index entry. For every type but TEXT the fold is
+// exact: two values share a key only if they are equal. Two strings that share
+// their first 8 bytes share a key, so a search through a TEXT key finds
+// candidates, and the comparison must be checked again on the row. Not for
+// NULL, which no index holds.
+inline std::uint64_t order_key(const Field& f) {
+  if (f.type == ColType::kText) {
+    std::uint64_t p = 0;
+    for (std::size_t i = 0; i < 8 && i < f.text.size(); ++i)
+      p |= std::uint64_t{static_cast<unsigned char>(f.text[i])} << (56 - 8 * i);
+    return p;
+  }
+  if (f.type == ColType::kDouble) {
+    const std::uint64_t b = std::bit_cast<std::uint64_t>(f.f64 == 0 ? 0.0 : f.f64);
+    return (b >> 63) ? ~b : b | (1ULL << 63);
+  }
+  return static_cast<std::uint64_t>(f.i64) ^ (1ULL << 63);  // INT64, INT32, BOOL
+}
+
+// Whether order_key is exact for this type: everything but TEXT.
+inline bool order_key_exact(ColType t) { return t != ColType::kText; }
+
 // ---- encode: a row becomes bytes ----
 inline std::vector<std::uint8_t> encode(const Schema& s, const Row& row) {
   check_that(row.size() == s.size(), "row has the wrong number of columns");

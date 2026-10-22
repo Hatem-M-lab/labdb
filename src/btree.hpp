@@ -14,6 +14,13 @@
 // Scope for this unit: keys are unique (re-inserting a key updates its
 // value); keys and values are 8 bytes. Variable-length and duplicate keys
 // are deliberately out of scope (see the introduction).
+//
+// Unit 11 lifts the second limit for one kind of tree. A secondary index maps
+// a column's value to the rows that hold it, and many rows can hold the same
+// value, so a tree opened as non-unique keeps every (key, value) it is given
+// -- an insert never overwrites -- and entries with equal keys stay in the
+// order they were inserted. Such a tree is only ever inserted into and
+// searched with seek(): no SQL statement deletes a row yet.
 
 #include <cstdint>
 #include <cstring>
@@ -79,6 +86,19 @@ class LeafNode {
     while (lo < hi) {
       const std::uint16_t mid = static_cast<std::uint16_t>((lo + hi) / 2);
       if (key_at(mid) < k)
+        lo = static_cast<std::uint16_t>(mid + 1);
+      else
+        hi = mid;
+    }
+    return lo;
+  }
+
+  // First index whose key is > k: past every entry equal to k (Unit 11).
+  std::uint16_t upper_bound(Key k) const {
+    std::uint16_t lo = 0, hi = count();
+    while (lo < hi) {
+      const std::uint16_t mid = static_cast<std::uint16_t>((lo + hi) / 2);
+      if (key_at(mid) <= k)
         lo = static_cast<std::uint16_t>(mid + 1);
       else
         hi = mid;
@@ -179,6 +199,22 @@ class InternalNode {
     return lo;
   }
 
+  // Unit 11: index of the LEFTMOST child that can hold key k -- past every
+  // separator < k (lower_bound). With duplicate keys, entries equal to a
+  // separator can sit in the child left of it as well as the one right of it,
+  // and the first entry >= k is found only by starting from the left.
+  std::uint16_t first_child_for(Key k) const {
+    std::uint16_t lo = 0, hi = count();
+    while (lo < hi) {
+      const std::uint16_t mid = static_cast<std::uint16_t>((lo + hi) / 2);
+      if (key_at(mid) < k)
+        lo = static_cast<std::uint16_t>(mid + 1);
+      else
+        hi = mid;
+    }
+    return lo;
+  }
+
   // Insert separator key k at key-index ki and its right child c at
   // child-index ki+1, shifting to make room. Caller ensures not full.
   void insert_child_at(std::uint16_t ki, Key k, PageId c) {
@@ -247,6 +283,17 @@ class InternalNode {
   Page* p_;
 };
 
+// ------------------------------------------------------ descent (Unit 11)
+// Which child of an internal node seek() descends into, looking for the first
+// entry >= k. Unit 2's rule goes past every separator <= k, to the rightmost
+// child that can hold k -- and with unique keys the only one, since a key equal
+// to a separator lives right of it. A tree with duplicate keys needs the
+// leftmost. The rule is a parameter so that Challenge 11.5 can run a real index
+// scan with Unit 2's rule in place of the right one.
+using ChildRule = std::uint16_t (*)(const InternalNode&, Key);
+inline std::uint16_t rightmost_child(const InternalNode& n, Key k) { return n.child_index_for(k); }
+inline std::uint16_t leftmost_child(const InternalNode& n, Key k) { return n.first_child_for(k); }
+
 // ---------------------------------------------------------------- Cursor
 class BTree;  // forward declaration for friendship
 
@@ -288,11 +335,21 @@ class BTree {
   // `on_root_changed` is called with the new root so the catalog can keep
   // that table's directory entry current. The tree does not know what a
   // catalog is; it just reports when its own address changes.
-  BTree(BufferPool& pool, PageId root, std::function<void(PageId)> on_root_changed);
+  // Unit 11: `unique` = false opens a tree that keeps duplicate keys -- a
+  // secondary index.
+  BTree(BufferPool& pool, PageId root, std::function<void(PageId)> on_root_changed,
+        bool unique = true);
 
   // Insert or update. Returns true if the key was newly inserted, false
-  // if an existing key's value was overwritten.
+  // if an existing key's value was overwritten. In a non-unique tree every
+  // insert adds an entry, after any entries with the same key.
   bool insert(Key key, Value value);
+
+  // Unit 11: insert only if the key is absent. Returns false, and changes
+  // nothing, if it is present -- how a table refuses a second row with the
+  // same key, now that its indexes would otherwise keep the first row's
+  // entries pointing at a row the table no longer has.
+  bool insert_new(Key key, Value value);
 
   // Point lookup: the operation Unit 1 could only answer by scanning.
   std::optional<Value> search(Key key) const;
@@ -306,7 +363,15 @@ class BTree {
   // read entries in ascending order -- a range scan is this plus a stop
   // key; a full scan is seek(0) to exhaustion.
   Cursor seek(Key lo) const;
+  // Unit 11: the same, descending by `rule`. seek(lo) uses rightmost_child
+  // in a unique tree and leftmost_child in a non-unique one.
+  Cursor seek(Key lo, ChildRule rule) const;
 
+  // Unit 11: a cursor at the last entry, the largest key -- the rightmost
+  // child at every level. Invalid if the tree is empty.
+  Cursor last() const;
+
+  bool unique() const { return unique_; }
   PageId root() const { return root_; }
 
   // Height in levels: 1 for a lone leaf root, +1 per internal level. Equal
@@ -320,7 +385,8 @@ class BTree {
   };
 
   std::optional<Split> insert_rec(PageId node_id, Key key, Value value,
-                                   bool& inserted);
+                                   bool overwrite, bool& inserted);
+  bool insert_with(Key key, Value value, bool overwrite);
 
   // Deletion helpers (Unit 3). erase_rec removes the key and reports
   // whether node_id underflowed; fix_child_underflow repairs child ci of a
@@ -333,6 +399,7 @@ class BTree {
   BufferPool& pool_;
   PageId root_ = kNullPage;
   std::function<void(PageId)> on_root_changed_;  // null for the legacy ctor
+  bool unique_ = true;
 };
 
 }  // namespace labdb

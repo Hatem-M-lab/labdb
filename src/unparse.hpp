@@ -1,6 +1,7 @@
 #pragma once
 // Unparse -- an AST back into normalized SQL text. Unit 7; joins in Unit 9;
-// aggregates, GROUP BY, HAVING, ORDER BY and LIMIT in Unit 10.
+// aggregates, GROUP BY, HAVING, ORDER BY and LIMIT in Unit 10; CREATE INDEX in
+// Unit 11.
 //
 // The reverse of the parser: given a Statement, produce a canonical SQL string
 // for it. This is how the payoff (Challenge 7.5) shows the parse was faithful
@@ -91,6 +92,9 @@ inline std::string unparse(const Statement& s) {
       os << ")";
       break;
     }
+    case Statement::Kind::kCreateIndex:
+      os << "CREATE INDEX ON " << s.create_index.table << " (" << s.create_index.column << ")";
+      break;
     case Statement::Kind::kInsert: {
       os << "INSERT INTO " << s.insert.table << " VALUES (";
       for (std::size_t i = 0; i < s.insert.values.size(); ++i) {

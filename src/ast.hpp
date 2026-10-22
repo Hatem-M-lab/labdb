@@ -1,6 +1,7 @@
 #pragma once
 // AST -- the shape of a parsed SQL statement. Unit 7; joins added in Unit 9;
-// aggregates, GROUP BY, HAVING, ORDER BY and LIMIT in Unit 10.
+// aggregates, GROUP BY, HAVING, ORDER BY and LIMIT in Unit 10; CREATE INDEX in
+// Unit 11.
 //
 // The parser turns tokens into one of these. The nodes are deliberately close
 // to what the executor will need: a CreateTable carries a Schema the catalog
@@ -35,6 +36,13 @@ namespace labdb {
 struct CreateTableStmt {
   std::string table;
   Schema schema;
+};
+
+// Unit 11: CREATE INDEX ON table (column). An index has no name of its own: it
+// is the index on that column, and a column has at most one.
+struct CreateIndexStmt {
+  std::string table;
+  std::string column;
 };
 
 // INSERT INTO name VALUES (literals...)
@@ -120,12 +128,13 @@ struct SelectStmt {
   std::optional<std::int64_t> limit;  // Unit 10
 };
 
-// A parsed statement is exactly one of the three.
+// A parsed statement is exactly one of the four.
 struct Statement {
-  enum class Kind { kCreate, kInsert, kSelect } kind;
+  enum class Kind { kCreate, kInsert, kSelect, kCreateIndex } kind;
   CreateTableStmt create;
   InsertStmt insert;
   SelectStmt select;
+  CreateIndexStmt create_index;  // Unit 11
 };
 
 inline const char* op_symbol(TokenType op) { return token_type_name(op); }

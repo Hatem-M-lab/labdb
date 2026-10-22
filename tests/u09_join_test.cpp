@@ -281,7 +281,11 @@ int main() {
   }
 
   // ---- 7. the plan is visible ----
+  // (Unit 9's plans, that is: since Unit 11 the planner chooses for itself,
+  // and Unit 11's own test checks what it chooses. Literal planning is Unit
+  // 9's planner, kept.)
   {
+    e.set_literal_planning(true);
     e.run_sql("SELECT o.oid, c.name FROM orders o JOIN customers c ON o.cust = c.id WHERE o.oid < 10");
     const std::string plan = e.explain_last();
     REQUIRE(plan.find("Project") != std::string::npos);
@@ -289,6 +293,7 @@ int main() {
     REQUIRE(plan.find("SeqScan orders AS o") != std::string::npos);
     e.run_sql("SELECT name FROM customers WHERE id = 7");
     REQUIRE(e.explain_last().find("IndexLookup customers key = 7") != std::string::npos);
+    e.set_literal_planning(false);
     std::printf("PASS plans: hash join chosen for an equality, index lookup kept for key = literal\n");
   }
 

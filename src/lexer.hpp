@@ -1,7 +1,7 @@
 #pragma once
 // Lexer -- SQL text into a stream of tokens. Unit 7; Unit 9 adds JOIN, ON, AND,
 // AS, INNER and the '.' of a qualified column; Unit 10 adds GROUP, BY, HAVING,
-// ORDER, ASC, DESC, LIMIT, and decimal literals like 3.5.
+// ORDER, ASC, DESC, LIMIT, and decimal literals like 3.5; Unit 11 adds INDEX.
 //
 // A single left-to-right pass over the source. Whitespace separates tokens
 // and is otherwise ignored; keywords are recognized case-insensitively but
@@ -204,6 +204,7 @@ class Lexer {
     if (u == "ASC") return TokenType::kAsc;
     if (u == "DESC") return TokenType::kDesc;
     if (u == "LIMIT") return TokenType::kLimit;
+    if (u == "INDEX") return TokenType::kIndex;
     return TokenType::kIdentifier;
   }
 };

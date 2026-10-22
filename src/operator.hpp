@@ -1,6 +1,7 @@
 #pragma once
 // Operators -- a query plan as a tree of iterators. Unit 9; aggregation,
-// sorting and LIMIT added in Unit 10.
+// sorting and LIMIT added in Unit 10; index scans and the index nested-loop
+// join in Unit 11.
 //
 // Unit 8 ran a SELECT as one function: scan the table, and for each row test
 // the WHERE and copy out the requested columns. That shape cannot hold a
@@ -113,17 +114,24 @@ class Operator {
   virtual std::string detail() const { return {}; }
   virtual std::vector<const Operator*> children() const { return {}; }
 
+  // Unit 11: how many rows the planner expected this operator to produce, when
+  // it estimated -- printed beside rows_out() by plan_text(op, true).
+  std::optional<double> estimate() const { return estimate_; }
+  void set_estimate(double rows) { estimate_ = rows; }
+
  protected:
   virtual bool produce(Row& out) = 0;
 
   OutSchema schema_;
   std::uint64_t rows_out_ = 0;
+  std::optional<double> estimate_;
 };
 using OpPtr = std::unique_ptr<Operator>;
 
 // The operator tree, one operator per line, children indented under their
-// parent, each with the number of rows it produced.
-std::string plan_text(const Operator& root);
+// parent, each with the number of rows it produced -- and, with `estimates`
+// (Unit 11), the number the planner expected.
+std::string plan_text(const Operator& root, bool estimates = false);
 
 // ---------------------------------------------------------------- sources
 
@@ -165,6 +173,34 @@ class IndexLookup : public Operator {
   TableRef table_;
   std::optional<Key> key_;
   bool done_ = false;
+};
+
+// Unit 11: the rows whose value in one indexed column has a key in [lo, hi]
+// (keys are order_key's), through that column's index: the table's own B+Tree
+// for the key (column 0), a secondary index for any other column. The index is
+// read in key order and each entry's row fetched from the heap by its RID, so
+// rows come out in the column's order -- and the heap is visited in whatever
+// order that is. lo > hi is an empty range: nothing is read at all. `rule`
+// overrides the index's descent rule (Challenge 11.5); nullptr keeps its own.
+class IndexScan : public Operator {
+ public:
+  IndexScan(Catalog& cat, const TableRef& table, OutSchema schema, std::size_t col,
+            Key lo, Key hi, std::string range_text, ChildRule rule = nullptr);
+  void open() override;
+  void close() override { cur_.reset(); }
+  std::string describe() const override;
+
+ protected:
+  bool produce(Row& out) override { return cur_ && cur_->next(out); }
+
+ private:
+  Catalog& cat_;
+  TableRef table_;
+  std::size_t col_;
+  Key lo_, hi_;
+  std::string range_text_;
+  ChildRule rule_;
+  std::optional<IndexCursor> cur_;
 };
 
 // Rows already in memory. Lets a pipeline be measured with no storage under
@@ -260,13 +296,15 @@ class NestedLoopJoin : public Operator {
 // row (the probe side) is hashed and compared only with the rows in its
 // bucket. `keys` pairs a left position with a right position (right
 // positions are relative to the right input); `residual` holds any other ON
-// comparisons, checked after the keys match.
+// comparisons, checked after the keys match. Unit 11: with `build_left` the
+// roles swap -- the left input is hashed and the right one streamed past it --
+// and the output is still the left row's fields, then the right's.
 class HashJoin : public Operator {
  public:
   using KeyPair = std::pair<std::size_t, std::size_t>;
   HashJoin(OpPtr left, OpPtr right, std::vector<KeyPair> keys,
            std::vector<BoundComparison> residual, std::string text,
-           JoinHashTable::MixFn mix = mix64);
+           JoinHashTable::MixFn mix = mix64, bool build_left = false);
   void open() override;
   void close() override;
   std::string describe() const override;
@@ -290,12 +328,54 @@ class HashJoin : public Operator {
   std::vector<BoundComparison> residual_;
   std::string text_;
   JoinHashTable::MixFn mix_;
+  bool build_left_;
   std::size_t nleft_;
   JoinHashTable table_;
   Row outer_;
   bool probing_ = false;
   std::uint64_t probe_hash_ = 0;
   std::uint32_t pos_ = 0, end_ = 0;
+};
+
+// Unit 11: for each row of the outer input, the rows of a table whose indexed
+// column equals the outer row's join column, found through that index -- one
+// index search per outer row, and the table is never scanned. A row fetched
+// from the table must still pass the table's own WHERE terms (`inner_filter`,
+// bound against the table's columns) and the join's other terms (`residual`,
+// bound against the output). The output is the outer row's fields, then the
+// table's -- or, with `inner_first`, the table's and then the outer's, so that
+// `a JOIN b` keeps a's columns first whichever side drives the join.
+class IndexNestedLoopJoin : public Operator {
+ public:
+  IndexNestedLoopJoin(OpPtr outer, Catalog& cat, const TableRef& inner, OutSchema inner_schema,
+                      std::size_t outer_col, std::size_t inner_col,
+                      std::vector<BoundComparison> inner_filter,
+                      std::vector<BoundComparison> residual, bool inner_first,
+                      std::string text, ChildRule rule = nullptr);
+  void open() override;
+  void close() override;
+  std::string describe() const override;
+  std::string detail() const override;
+  std::vector<const Operator*> children() const override { return {outer_.get()}; }
+
+ protected:
+  bool produce(Row& out) override;
+
+ private:
+  OpPtr outer_;
+  Catalog& cat_;
+  TableRef inner_;
+  std::size_t outer_col_, inner_col_;
+  std::vector<BoundComparison> inner_filter_, residual_;
+  bool inner_first_;
+  std::string text_;
+  ChildRule rule_;
+  std::string index_name_;  // for describe(): orders(customer)
+  bool text_key_;           // a TEXT key is a prefix: compare the strings too
+  std::optional<IndexCursor> cur_;
+  Row outer_row_, inner_row_;
+  bool have_outer_ = false;
+  std::uint64_t searches_ = 0, fetched_ = 0;
 };
 
 // ------------------------------------------------------ aggregation (Unit 10)
@@ -328,6 +408,35 @@ Field agg_result(const AggSpec& a, const AggState& s);
 // agg_result's type: COUNT and SUM are INT64, AVG is DOUBLE, MIN and MAX keep
 // their argument's type.
 ColType agg_type(const AggSpec& a);
+
+// Unit 11: MIN and MAX of indexed columns over a whole table, read from the
+// ends of their indexes instead of from every row. An index's first entry
+// holds the column's smallest value and its last entry the largest; NULLs are
+// not in the index, and MIN and MAX skip them anyway. A TEXT key is only a
+// prefix, so for TEXT the entries sharing the end key are fetched and compared.
+// The output is one row, one value per aggregate, named #0, #1, ... exactly as
+// HashAggregate names its results, so the operators above cannot tell which
+// of the two produced it.
+class IndexMinMax : public Operator {
+ public:
+  IndexMinMax(Catalog& cat, const TableRef& table, std::vector<AggSpec> aggs, std::string text);
+  void open() override;
+  void close() override {}
+  std::string describe() const override { return "IndexMinMax " + text_; }
+  std::string detail() const override;
+
+ protected:
+  bool produce(Row& out) override;
+
+ private:
+  Catalog& cat_;
+  TableRef table_;
+  std::vector<AggSpec> aggs_;
+  std::string text_;
+  Row values_;
+  bool done_ = false;
+  std::uint64_t fetched_ = 0;
+};
 
 // GROUP BY through a hash table. open() reads the whole input and folds each
 // row into its group's states; next() then hands out one row per group, in the

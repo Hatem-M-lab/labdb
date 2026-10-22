@@ -1,6 +1,7 @@
 #pragma once
 // Parser -- tokens into an abstract syntax tree. Unit 7; joins in Unit 9;
-// aggregates, GROUP BY, HAVING, ORDER BY and LIMIT in Unit 10.
+// aggregates, GROUP BY, HAVING, ORDER BY and LIMIT in Unit 10; CREATE INDEX in
+// Unit 11.
 //
 // A hand-written recursive-descent parser for the engine's SQL subset:
 // CREATE TABLE, INSERT, and SELECT -- since Unit 9 over one or more tables
@@ -24,6 +25,10 @@
 //   comparison = value op ( literal | column_ref ) ;
 //   column_ref = identifier [ "." identifier ] ;
 //   op         = "=" | "<>" | "<" | "<=" | ">" | ">=" ;
+//
+// and, since Unit 11, alongside CREATE TABLE:
+//
+//   create_index = "CREATE" "INDEX" "ON" identifier "(" identifier ")" ;
 //
 // The aggregate names are not reserved words: an identifier followed by '('
 // is a function call, so a column may still be called `count`.
@@ -104,6 +109,8 @@ class Parser {
   TableRef parse_table_ref();
   // Unit 10
   SelectItem parse_value(const char* what);
+  // Unit 11
+  Statement parse_create_index();
 };
 
 }  // namespace labdb

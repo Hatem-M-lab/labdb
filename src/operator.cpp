@@ -95,15 +95,21 @@ bool eval_pair(const BoundComparison& c, const Row& l, const Row& r,
 
 namespace {
 
-void plan_lines(const Operator& op, std::size_t depth, std::ostringstream& os) {
+void plan_lines(const Operator& op, std::size_t depth, bool estimates, std::ostringstream& os) {
   std::string line(depth * 2, ' ');
   line += op.describe();
   const std::size_t width = 60;
   os << line << std::string(line.size() < width ? width - line.size() : 1, ' ')
-     << "rows=" << op.rows_out() << "\n";
+     << "rows=" << op.rows_out();
+  if (estimates && op.estimate()) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, " est=%.0f", *op.estimate());
+    os << buf;
+  }
+  os << "\n";
   const std::string d = op.detail();
   if (!d.empty()) os << std::string(depth * 2 + 4, ' ') << d << "\n";
-  for (const Operator* c : op.children()) plan_lines(*c, depth + 1, os);
+  for (const Operator* c : op.children()) plan_lines(*c, depth + 1, estimates, os);
 }
 
 std::string table_text(const TableRef& t) {
@@ -119,9 +125,9 @@ OutSchema table_schema(const Schema& s, const TableRef& t) {
   return out;
 }
 
-std::string plan_text(const Operator& root) {
+std::string plan_text(const Operator& root, bool estimates) {
   std::ostringstream os;
-  plan_lines(root, 0, os);
+  plan_lines(root, 0, estimates, os);
   return os.str();
 }
 
@@ -155,6 +161,25 @@ bool IndexLookup::produce(Row& out) {
 std::string IndexLookup::describe() const {
   return "IndexLookup " + table_text(table_) + " key = " +
          (key_ ? std::to_string(static_cast<std::int64_t>(*key_)) : "NULL");
+}
+
+IndexScan::IndexScan(Catalog& cat, const TableRef& table, OutSchema schema, std::size_t col,
+                     Key lo, Key hi, std::string range_text, ChildRule rule)
+    : cat_(cat), table_(table), col_(col), lo_(lo), hi_(hi),
+      range_text_(std::move(range_text)), rule_(rule) {
+  schema_ = std::move(schema);
+}
+
+void IndexScan::open() {
+  cur_.reset();
+  if (lo_ > hi_) return;  // an empty range: the index is not even opened
+  cur_.emplace(cat_.open_index(table_.name, col_, rule_));
+  cur_->seek(lo_, hi_);
+}
+
+std::string IndexScan::describe() const {
+  return "IndexScan " + table_text(table_) + " (" + schema_[col_].column.name + "): " +
+         range_text_;
 }
 
 RowsScan::RowsScan(OutSchema schema, const std::vector<Row>& rows) : rows_(rows) {
@@ -250,10 +275,10 @@ std::string NestedLoopJoin::detail() const {
 
 HashJoin::HashJoin(OpPtr left, OpPtr right, std::vector<KeyPair> keys,
                    std::vector<BoundComparison> residual, std::string text,
-                   JoinHashTable::MixFn mix)
+                   JoinHashTable::MixFn mix, bool build_left)
     : left_(std::move(left)), right_(std::move(right)),
       residual_(std::move(residual)), text_(std::move(text)), mix_(mix),
-      nleft_(left_->schema().size()), table_(mix) {
+      build_left_(build_left), nleft_(left_->schema().size()), table_(mix) {
   schema_ = concat(left_->schema(), right_->schema());
   for (const auto& [l, r] : keys) {
     lkeys_.push_back(l);
@@ -293,31 +318,36 @@ bool HashJoin::keys_equal(const Row& l, const Row& r) const {
 }
 
 void HashJoin::open() {
-  // Build: file every right row under its key. A row whose key is NULL can
-  // never match (NULL equals nothing, not even NULL), so it is not filed.
+  // Build: file every row of the build side under its key. A row whose key is
+  // NULL can never match (NULL equals nothing, not even NULL), so it is not
+  // filed. The build side is the right input, or the left with build_left.
+  Operator& build = build_left_ ? *left_ : *right_;
+  const std::vector<std::size_t>& bkeys = build_left_ ? lkeys_ : rkeys_;
   table_ = JoinHashTable(mix_);
-  right_->open();
+  build.open();
   Row r;
-  while (right_->next(r)) {
-    if (null_key(r, rkeys_)) continue;
-    const std::uint64_t h = key_hash(r, rkeys_);
+  while (build.next(r)) {
+    if (null_key(r, bkeys)) continue;
+    const std::uint64_t h = key_hash(r, bkeys);
     table_.add(h, std::move(r));
   }
-  right_->close();
+  build.close();
   table_.finish();
-  // Probe: stream the left input past the table, one row at a time.
-  left_->open();
+  // Probe: stream the other input past the table, one row at a time.
+  (build_left_ ? right_ : left_)->open();
   probing_ = false;
 }
 
-void HashJoin::close() { left_->close(); }  // the table stays, for detail()
+void HashJoin::close() { (build_left_ ? right_ : left_)->close(); }  // the table stays, for detail()
 
 bool HashJoin::produce(Row& out) {
+  Operator& probe = build_left_ ? *right_ : *left_;
+  const std::vector<std::size_t>& pkeys = build_left_ ? rkeys_ : lkeys_;
   for (;;) {
     if (!probing_) {
-      if (!left_->next(outer_)) return false;
-      if (null_key(outer_, lkeys_)) continue;
-      probe_hash_ = key_hash(outer_, lkeys_);
+      if (!probe.next(outer_)) return false;
+      if (null_key(outer_, pkeys)) continue;
+      probe_hash_ = key_hash(outer_, pkeys);
       std::tie(pos_, end_) = table_.bucket_range(probe_hash_);
       probing_ = true;
     }
@@ -325,15 +355,17 @@ bool HashJoin::produce(Row& out) {
       const std::uint32_t id = table_.id_at(pos_++);
       if (table_.hash_of(id) != probe_hash_) continue;  // another key, same bucket
       const Row& in = table_.row(id);
-      if (!keys_equal(outer_, in)) continue;            // another key, same hash
+      const Row& l = build_left_ ? in : outer_;
+      const Row& r = build_left_ ? outer_ : in;
+      if (!keys_equal(l, r)) continue;                  // another key, same hash
       bool match = true;
       for (const BoundComparison& c : residual_)
-        if (!eval_pair(c, outer_, in, nleft_)) { match = false; break; }
+        if (!eval_pair(c, l, r, nleft_)) { match = false; break; }
       if (!match) continue;
-      join_rows(outer_, in, out);
+      join_rows(l, r, out);
       return true;
     }
-    probing_ = false;  // this left row's bucket is used up
+    probing_ = false;  // this probe row's bucket is used up
   }
 }
 
@@ -341,9 +373,76 @@ std::string HashJoin::describe() const { return "HashJoin ON " + text_; }
 
 std::string HashJoin::detail() const {
   const JoinHashTable::Occupancy o = table_.occupancy();
-  return "hash table (right input): " + std::to_string(o.rows) + " rows in " +
-         std::to_string(o.buckets) + " buckets, " + std::to_string(o.used) +
-         " used, longest chain " + std::to_string(o.longest);
+  return std::string("hash table (") + (build_left_ ? "left" : "right") + " input): " +
+         std::to_string(o.rows) + " rows in " + std::to_string(o.buckets) + " buckets, " +
+         std::to_string(o.used) + " used, longest chain " + std::to_string(o.longest);
+}
+
+// ------------------------------------------- index nested-loop join (Unit 11)
+
+IndexNestedLoopJoin::IndexNestedLoopJoin(OpPtr outer, Catalog& cat, const TableRef& inner,
+                                         OutSchema inner_schema, std::size_t outer_col,
+                                         std::size_t inner_col,
+                                         std::vector<BoundComparison> inner_filter,
+                                         std::vector<BoundComparison> residual,
+                                         bool inner_first, std::string text, ChildRule rule)
+    : outer_(std::move(outer)), cat_(cat), inner_(inner), outer_col_(outer_col),
+      inner_col_(inner_col), inner_filter_(std::move(inner_filter)),
+      residual_(std::move(residual)), inner_first_(inner_first), text_(std::move(text)),
+      rule_(rule) {
+  index_name_ = inner.name + "(" + inner_schema[inner_col].column.name + ")";
+  text_key_ = inner_schema[inner_col].column.type == ColType::kText;
+  schema_ = inner_first_ ? concat(inner_schema, outer_->schema())
+                         : concat(outer_->schema(), inner_schema);
+}
+
+void IndexNestedLoopJoin::open() {
+  cur_.emplace(cat_.open_index(inner_.name, inner_col_, rule_));
+  outer_->open();
+  have_outer_ = false;
+  searches_ = fetched_ = 0;
+}
+
+void IndexNestedLoopJoin::close() {
+  outer_->close();
+  cur_.reset();
+}
+
+bool IndexNestedLoopJoin::produce(Row& out) {
+  for (;;) {
+    if (!have_outer_) {
+      if (!outer_->next(outer_row_)) return false;
+      const Field& k = outer_row_[outer_col_];
+      if (k.is_null) continue;  // NULL equals nothing: no search at all
+      const Key key = order_key(k);
+      cur_->seek(key, key);
+      ++searches_;
+      have_outer_ = true;
+    }
+    while (cur_->next(inner_row_)) {
+      ++fetched_;
+      if (text_key_ && inner_row_[inner_col_].text != outer_row_[outer_col_].text) continue;
+      bool pass = true;
+      for (const BoundComparison& c : inner_filter_)
+        if (!eval(c, inner_row_)) { pass = false; break; }
+      if (!pass) continue;
+      if (inner_first_) join_rows(inner_row_, outer_row_, out);
+      else join_rows(outer_row_, inner_row_, out);
+      for (const BoundComparison& c : residual_)
+        if (!eval(c, out)) { pass = false; break; }
+      if (pass) return true;
+    }
+    have_outer_ = false;  // this outer row's matches are used up
+  }
+}
+
+std::string IndexNestedLoopJoin::describe() const {
+  return "IndexNestedLoopJoin ON " + text_ + " (index " + index_name_ + ")";
+}
+
+std::string IndexNestedLoopJoin::detail() const {
+  return "index searches: " + std::to_string(searches_) + "; rows fetched: " +
+         std::to_string(fetched_);
 }
 
 // ------------------------------------------------------ aggregation (Unit 10)
@@ -367,6 +466,58 @@ void agg_update(const AggSpec& a, AggState& s, const Field& v) {
     case AggFunc::kCount:
     case AggFunc::kNone: break;
   }
+}
+
+IndexMinMax::IndexMinMax(Catalog& cat, const TableRef& table, std::vector<AggSpec> aggs,
+                         std::string text)
+    : cat_(cat), table_(table), aggs_(std::move(aggs)), text_(std::move(text)) {
+  for (std::size_t a = 0; a < aggs_.size(); ++a)
+    schema_.push_back({"", {"#" + std::to_string(a), agg_type(aggs_[a]), true}});
+}
+
+void IndexMinMax::open() {
+  values_.clear();
+  done_ = false;
+  fetched_ = 0;
+  for (const AggSpec& a : aggs_) {
+    IndexCursor cur = cat_.open_index(table_.name, a.col);
+    Field best = Field::Null(a.type);  // an empty index: no value, so NULL
+    std::optional<Key> end;  // the key at the end the aggregate wants
+    if (a.func == AggFunc::kMin) {
+      end = 0;  // the first entry is the first one at or after key 0
+    } else {
+      end = cur.max_key();
+    }
+    if (end) {
+      cur.seek(*end, ~Key{0});
+      Row r;
+      bool first = true;
+      while (cur.next(r)) {
+        if (!first && cur.key() != *end) break;  // past the entries with the end key
+        if (first) end = cur.key();              // MIN: the smallest key there is
+        ++fetched_;
+        const Field& v = r[a.col];
+        if (first || compare_values(v, best) * (a.func == AggFunc::kMin ? 1 : -1) < 0) best = v;
+        first = false;
+        if (order_key_exact(a.type)) break;  // an exact key is the value: one row is enough
+        // A string shorter than 8 bytes is all inside its key, and any other
+        // string with that key begins with it -- so none is smaller.
+        if (a.func == AggFunc::kMin && best.text.size() < 8) break;
+      }
+    }
+    values_.push_back(best);
+  }
+}
+
+bool IndexMinMax::produce(Row& out) {
+  if (done_) return false;
+  done_ = true;
+  out = values_;
+  return true;
+}
+
+std::string IndexMinMax::detail() const {
+  return "rows fetched: " + std::to_string(fetched_) + " (from the ends of the indexes)";
 }
 
 Field agg_result(const AggSpec& a, const AggState& s) {
@@ -524,27 +675,16 @@ Sort::Sort(OpPtr child, std::vector<SortKey> keys, std::optional<std::size_t> li
   schema_ = child_->schema();
 }
 
-// The first sort key as 64 bits that order the way the rows must: an integer
-// with its sign bit flipped, a double by the usual bit trick, text by its first
-// 8 bytes, NULL as the largest code; all inverted for DESC. The map never
-// reverses an order, only merges values: equal prefixes may still differ (two
-// strings with 8 bytes in common, a value that lands on NULL's code), and
-// before() settles those.
+// The first sort key as 64 bits that order the way the rows must: the value's
+// order_key (an integer with its sign bit flipped, a double by the usual bit
+// trick, text by its first 8 bytes), NULL as the largest code; all inverted
+// for DESC. The map never reverses an order, only merges values: equal
+// prefixes may still differ (two strings with 8 bytes in common, a value that
+// lands on NULL's code), and before() settles those.
 std::uint64_t Sort::prefix_of(const Row& r) const {
   if (!prefixes_) return 0;
   const Field& f = r[keys_[0].col];
-  std::uint64_t p = ~0ULL;  // NULL: after every value
-  if (f.is_null) {
-  } else if (f.type == ColType::kText) {
-    p = 0;
-    for (std::size_t i = 0; i < 8 && i < f.text.size(); ++i)
-      p |= std::uint64_t{static_cast<unsigned char>(f.text[i])} << (56 - 8 * i);
-  } else if (f.type == ColType::kDouble) {
-    const std::uint64_t b = std::bit_cast<std::uint64_t>(f.f64 == 0 ? 0.0 : f.f64);
-    p = (b >> 63) ? ~b : b | (1ULL << 63);
-  } else {
-    p = static_cast<std::uint64_t>(f.i64) ^ (1ULL << 63);
-  }
+  const std::uint64_t p = f.is_null ? ~0ULL : order_key(f);  // NULL: after every value
   return keys_[0].desc ? ~p : p;
 }
 

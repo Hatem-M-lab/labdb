@@ -1,10 +1,11 @@
 // A probe, not a benchmark: one stage of a point lookup, repeated, for
 // counting instructions under valgrind --tool=callgrind.
 //
-//   u10_query_probe STAGE N      STAGE: parse | plan | query
+//   u10_query_probe STAGE N      STAGE: parse | plan | query | insert
 //
 // It parses, or plans, or runs end to end, `SELECT customer FROM orders
-// WHERE oid = 42` N times against a 100-row table. Run with N = 0 and with a
+// WHERE oid = 42` N times against a 100-row table -- or (insert, added in
+// Unit 11) runs N INSERTs of new rows into it. Run with N = 0 and with a
 // large N, and the difference over N is that stage's instructions per query,
 // with the setup cancelled out. Timing a difference of a few percent on a
 // shared machine is hopeless (Challenge 10.1); counting instructions is not.
@@ -27,7 +28,7 @@ using namespace labdb;
 
 int main(int argc, char** argv) {
   if (argc != 3) {
-    std::fprintf(stderr, "usage: %s parse|plan|query N\n", argv[0]);
+    std::fprintf(stderr, "usage: %s parse|plan|query|insert N\n", argv[0]);
     return 2;
   }
   const std::string stage = argv[1];
@@ -45,7 +46,11 @@ int main(int argc, char** argv) {
   Parser p0(sql);
   const Statement parsed = p0.parse_single();
   for (long i = 0; i < n; ++i) {
-    if (stage == "parse") {
+    if (stage == "insert") {
+      ResultSet r = e.run_sql("INSERT INTO orders VALUES (" + std::to_string(1000 + i) + ", " +
+                              std::to_string(i % 7) + ", 100)");
+      labdb::test::do_not_optimize(r);
+    } else if (stage == "parse") {
       Parser p(sql);
       Statement s = p.parse_single();
       labdb::test::do_not_optimize(s);

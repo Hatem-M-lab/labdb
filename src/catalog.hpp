@@ -21,7 +21,16 @@
 // root and a callback, they report back whenever that root moves, and the
 // catalog writes the new value into that table's slot. Neither the heap nor
 // the tree needs to know a catalog exists; they just report an address change.
+//
+// Unit 11 gives a table secondary indexes -- at most one per column, made by
+// CREATE INDEX -- and two numbers a planner needs: how many rows the table
+// holds and how many pages its heap spans, both kept exact on every insert.
+// An index is a non-unique B+Tree from a column's order_key to the RID of
+// each row holding that value (NULLs are not indexed: no comparison with NULL
+// is ever true, so no search needs them). Its root lives in the column's own
+// descriptor, beside the column's name and type.
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -58,12 +67,57 @@ class TableCursor {
   Cursor cur_;
 };
 
+// Unit 11: the key a table's own index files a row under -- the order_key of
+// its INT64 key column, so that the tree's unsigned order is the keys' signed
+// order (through Unit 10 it was the raw bits, and a negative key would have
+// sorted after every positive one).
+inline Key table_key(std::int64_t id) { return static_cast<Key>(id) ^ (Key{1} << 63); }
+
+// Unit 11: what a planner needs to know about a table, read in one go.
+struct TableInfo {
+  Schema schema;
+  std::uint64_t rows = 0;        // exact: counted by every insert
+  std::uint32_t heap_pages = 0;  // pages in the table's heap
+  std::vector<bool> indexed;     // per column: column 0 always (the key); others by CREATE INDEX
+};
+
+// Unit 11: a pull-based walk through one index, the twin of TableCursor: the
+// rows whose index key lies in [lo, hi], in key order. For the key column
+// (column 0) the index is the table's own B+Tree; for any other column it is
+// that column's secondary index. Each entry's value is a RID, and the row is
+// fetched from the heap by it -- the same fetch a scan makes, in another order.
+class IndexCursor {
+ public:
+  // Position before the first entry with key >= lo; next() stops after hi.
+  void seek(Key lo, Key hi);
+  // Decode the row of the next entry in range into `out`; false past hi.
+  bool next(Row& out);
+  Key key() const { return key_; }  // the key of the entry next() last returned
+  // The largest key in the index, if it holds any entry.
+  std::optional<Key> max_key() const;
+  const Schema& schema() const { return schema_; }
+
+ private:
+  friend class Catalog;
+  IndexCursor(BufferPool& pool, Schema schema, PageId heap_head, PageId root,
+              bool unique, ChildRule rule);
+
+  Schema schema_;
+  Heap heap_;
+  BTree tree_;
+  ChildRule rule_;
+  std::optional<Cursor> cur_;
+  Key hi_ = 0;
+  Key key_ = 0;
+};
+
 inline constexpr std::size_t kCatalogMaxNameLen = 32;
 inline constexpr std::size_t kCatalogMaxColumns = 8;
 inline constexpr std::size_t kCatalogColNameLen = 16;
 
-// Bytes one column's descriptor occupies inside a TableDesc slot.
-inline constexpr std::size_t kCatalogColDescSize = kCatalogColNameLen + 2;  // name + type + nullable
+// Bytes one column's descriptor occupies inside a TableDesc slot: name, type,
+// nullable, and (Unit 11) the root of the column's secondary index, or 0.
+inline constexpr std::size_t kCatalogColDescSize = kCatalogColNameLen + 2 + 4;
 
 // Bytes one TableDesc slot occupies in the catalog page:
 //   [0 .. 32)  name, raw bytes, unused tail zeroed
@@ -72,10 +126,15 @@ inline constexpr std::size_t kCatalogColDescSize = kCatalogColNameLen + 2;  // n
 //   [33]       ncols (u8)
 //   [34..38)   heap_head (u32)
 //   [38..42)   btree_root (u32)
-//   [42 .. 42 + ncols*18)  column descriptors, each: name[16] + type(u8) + nullable(u8)
-inline constexpr std::size_t kCatalogDescFixed = kCatalogMaxNameLen + 1 + 1 + 4 + 4;  // 42
+//   [42..50)   row_count (u64)        -- Unit 11
+//   [50..54)   heap_pages (u32)       -- Unit 11
+//   [54 .. 54 + ncols*22)  column descriptors, each:
+//              name[16] + type(u8) + nullable(u8) + index_root(u32, Unit 11)
+inline constexpr std::size_t kCatalogRowCountOff = 42;
+inline constexpr std::size_t kCatalogHeapPagesOff = 50;
+inline constexpr std::size_t kCatalogDescFixed = kCatalogMaxNameLen + 1 + 1 + 4 + 4 + 8 + 4;  // 54
 inline constexpr std::size_t kCatalogSlotSize =
-    kCatalogDescFixed + kCatalogMaxColumns * kCatalogColDescSize;  // 42 + 8*18 = 186
+    kCatalogDescFixed + kCatalogMaxColumns * kCatalogColDescSize;  // 54 + 8*22 = 230
 
 // Directory header at the top of the catalog page's body (after the 20-byte
 // page header): a 2-byte slot count.
@@ -101,9 +160,43 @@ class Catalog {
   std::optional<Schema> find_schema(const std::string& name) const;
   std::vector<std::string> table_names() const;
 
+  // Unit 11: the schema, the row and page counts, and which columns are
+  // indexed, in one read of the catalog page; nothing if there is no table.
+  std::optional<TableInfo> find_table(const std::string& name) const;
+
+  // Unit 11: CREATE INDEX -- plant an empty non-unique tree for `column`, record
+  // its root in the column's descriptor, and file every existing row with a
+  // non-NULL value in it. Returns the number of entries filed. The executor
+  // checks the column exists, is not the key, and has no index yet.
+  std::uint64_t create_index(const std::string& table, std::size_t column);
+
+  // Unit 11: open a walk through the index of `column` (0: the table's own
+  // tree). `rule` overrides how the walk descends (Challenge 11.5); nullptr
+  // means the tree's own rule.
+  IndexCursor open_index(const std::string& table, std::size_t column,
+                         ChildRule rule = nullptr);
+
+  // Unit 11: how many entries of that index have keys in [lo, hi], counted
+  // through its leaves without fetching a row -- but no more than `cap`: past
+  // that, the count stops, and `cap` is returned.
+  std::uint64_t count_index(const std::string& table, std::size_t column, Key lo,
+                            Key hi, std::uint64_t cap);
+
+  // Unit 11: the first and last keys of that index, if it holds any entry --
+  // one descent to each end.
+  std::optional<std::pair<Key, Key>> index_bounds(const std::string& table, std::size_t column);
+
+  // The buffer pool's size, in pages: what a planner needs to guess how often
+  // a page it asks for is already in memory.
+  std::size_t pool_frames() const { return pool_.capacity(); }
+
   // Insert a row into a named table. Column 0 is that table's key (a
   // limitation stated plainly: no separate PRIMARY KEY declaration yet).
-  RID insert_row(const std::string& table, const Row& row);
+  // Since Unit 11 the row is also filed in every index of the table, and the
+  // table's row count goes up by one -- and a row whose key the table already
+  // holds is refused: nothing is written, and the result is empty. (Through
+  // Unit 10 it silently replaced the old row in the table's own tree.)
+  std::optional<RID> insert_row(const std::string& table, const Row& row);
 
   // Look a row up by its key column, through that table's own index --
   // reached by name, not by a heap or tree handle the caller had to keep.
@@ -127,6 +220,9 @@ class Catalog {
     Schema schema;
     PageId heap_head;
     PageId btree_root;
+    std::uint64_t rows;                 // Unit 11
+    std::uint32_t heap_pages;           // Unit 11
+    std::array<PageId, kCatalogMaxColumns> index_roots{};  // Unit 11: per column, kNullPage if none
   };
 
   void load_catalog_page(Page& out) const { pool_.read_page(cat_page_, out); }
@@ -152,6 +248,12 @@ class Catalog {
   RawDesc read_desc(const Page& p, std::size_t slot) const;
   void update_heap_head(const std::string& name, PageId new_head);
   void update_btree_root(const std::string& name, PageId new_root);
+  void update_index_root(const std::string& name, std::size_t column, PageId new_root);
+  // The root of the tree that indexes `column`: the table's own for column 0.
+  static PageId index_root(const RawDesc& d, std::size_t column) {
+    return column == 0 ? d.btree_root : d.index_roots[column];
+  }
+  RawDesc desc_of(const std::string& table) const;  // read the slot, or fail
 
   BufferPool& pool_;
   PageId cat_page_;
