@@ -9,7 +9,6 @@
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
-engine="io pager btree buffer_pool heap catalog parser executor operator"
 cp -r "$root/src" "$root/tests" "$root/tools" "$tmp/"
 # the old check_that: one function that tests, and builds the message itself
 python3 - "$tmp/src/common.hpp" <<'EOF'
@@ -29,7 +28,7 @@ EOF
 for side in old new; do
   if [ $side = old ]; then src="$tmp/src"; else src="$root/src"; fi
   files=""
-  for f in $engine; do files="$files $src/$f.cpp"; done
+  files=$(ls "$src"/*.cpp)  # every engine source
   g++ -std=c++20 -O2 -I"$src" -I"$root/tests" "$root/tools/u12_row_probe.cpp" $files -o "$tmp/probe_$side"
 done
 "$tmp/probe_new" build "$tmp/events.db"

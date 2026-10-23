@@ -118,7 +118,9 @@ int main() {
       }
       const std::uint32_t pages = pool.page_count();
       const double t0 = now_s();
+      e.run_sql("BEGIN");  // Unit 13: the INSERTs' own work, not a commit's fsync for each
       for (const std::string& s : sql) e.run_sql(s);
+      e.run_sql("COMMIT");
       runs.push_back(now_s() - t0);
       grew = pool.page_count() - pages;  // the same in every run: the same rows, the same splits
     }

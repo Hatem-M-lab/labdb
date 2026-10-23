@@ -3,11 +3,14 @@
 CXX      := g++
 CXXFLAGS := -std=c++20 -O2 -Wall -Wextra
 INC      := -Isrc -Itests
-ENGINE   := src/io.cpp src/pager.cpp src/btree.cpp src/buffer_pool.cpp \
+ENGINE   := src/io.cpp src/wal.cpp src/pager.cpp src/btree.cpp src/buffer_pool.cpp \
             src/heap.cpp src/catalog.cpp src/parser.cpp src/executor.cpp \
             src/operator.cpp
 HDRS     := $(wildcard src/*.hpp) tests/harness.hpp tests/show.hpp tests/shop.hpp tests/anatomy.hpp \
-            tests/interleave.hpp
+            tests/interleave.hpp tests/crashsim.hpp tests/u13_workload.hpp
+# Unit 13: the engine is compiled once, into objects, and every program is
+# linked against them -- the same flags, the same code, a much shorter build.
+OBJ      := $(patsubst src/%.cpp,obj/%.o,$(ENGINE))
 
 TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
          u01_churn_bench u01_pager_test u01_fsync_bench \
@@ -26,7 +29,8 @@ TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
          u11_index_test u11_range_bench u11_index_bench u11_cost_bench \
          u11_join_bench u11_session_bench \
          u12_batch_test u12_anatomy_bench u12_cost_bench u12_pipeline_bench \
-         u12_group_bench u12_session_bench
+         u12_group_bench u12_session_bench \
+         u13_wal_test u13_crash_test u13_durability_bench
 
 BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u01_c12_smoke bin/u01_c14_smoke bin/u02_median_bug_demo \
@@ -35,15 +39,22 @@ BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u07_escape_swallow_demo bin/u08_key_range_demo \
         bin/u09_hash_collapse_demo bin/u09_null_probe \
         bin/u10_null_as_zero_demo bin/u10_query_probe bin/u11_split_run_demo \
-        bin/u11_insert_probe bin/u12_row_probe bin/u12_empty_batch_demo
+        bin/u11_insert_probe bin/u12_row_probe bin/u12_empty_batch_demo \
+        bin/u13_stale_log_demo
 
 all: $(BINS)
 
 bin:
 	mkdir -p bin
 
-bin/%: tests/%.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+obj:
+	mkdir -p obj
+
+obj/%.o: src/%.cpp $(HDRS) | obj
+	$(CXX) $(CXXFLAGS) $(INC) -c $< -o $@
+
+bin/%: tests/%.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 bin/u01_torn_write_demo: tools/u01_torn_write_demo.cpp | bin
 	$(CXX) $(CXXFLAGS) $< -o $@
@@ -62,58 +73,62 @@ bin/u05_null_shift_demo: tools/u05_null_shift_demo.cpp $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
 
 # The prefix-collision demo drives a real catalog page, so it links the engine.
-bin/u06_prefix_collision_demo: tools/u06_prefix_collision_demo.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u06_prefix_collision_demo: tools/u06_prefix_collision_demo.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The escape-swallow demo works purely on strings via the header-only lexer.
 bin/u07_escape_swallow_demo: tools/u07_escape_swallow_demo.cpp $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
 
 # The key-range demo drives the real executor, so it links the engine.
-bin/u08_key_range_demo: tools/u08_key_range_demo.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u08_key_range_demo: tools/u08_key_range_demo.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The hash-collapse demo runs real joins over real tables, so it links the engine.
-bin/u09_hash_collapse_demo: tools/u09_hash_collapse_demo.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u09_hash_collapse_demo: tools/u09_hash_collapse_demo.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The NULL probe uses only run_sql, so it builds against any unit's executor.
-bin/u09_null_probe: tools/u09_null_probe.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u09_null_probe: tools/u09_null_probe.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The NULL-as-zero demo runs real aggregates over a real table, so it links
 # the engine; it prints its tables with tests/show.hpp.
-bin/u10_null_as_zero_demo: tools/u10_null_as_zero_demo.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u10_null_as_zero_demo: tools/u10_null_as_zero_demo.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The split-run demo runs real index scans over a real table, so it links the
 # engine.
-bin/u11_split_run_demo: tools/u11_split_run_demo.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u11_split_run_demo: tools/u11_split_run_demo.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The insert probe runs INSERTs into a table with indexes, through run_sql.
-bin/u11_insert_probe: tools/u11_insert_probe.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u11_insert_probe: tools/u11_insert_probe.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The empty-batch demo runs real plans in batches over the shop, so it links
 # the engine.
-bin/u12_empty_batch_demo: tools/u12_empty_batch_demo.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u12_empty_batch_demo: tools/u12_empty_batch_demo.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The row probe runs one step of a scanned row (tests/anatomy.hpp) for
 # scripts/u12_anatomy_counts.sh to count under valgrind.
-bin/u12_row_probe: tools/u12_row_probe.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u12_row_probe: tools/u12_row_probe.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The query probe uses only Parser, plan and run_sql, so it builds against any
 # unit's engine from Unit 9 on (scripts/u10_before_after.sh builds it twice).
-bin/u10_query_probe: tools/u10_query_probe.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u10_query_probe: tools/u10_query_probe.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # The buffer-pool trap demo drives a real pool over a file, so unlike the
 # in-memory demos above it links the engine.
-bin/u04_lost_update_demo: tools/u04_lost_update_demo.cpp $(ENGINE) $(HDRS) | bin
-	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+bin/u04_lost_update_demo: tools/u04_lost_update_demo.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
+
+# Unit 13's forensic trap: a log reset without a new generation, replayed after a crash.
+bin/u13_stale_log_demo: tools/u13_stale_log_demo.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
 # Book snapshots: the intermediate Challenge 1.2 / 1.4 listings must also
 # compile and pass smoke tests. -I order makes the snapshot header shadow
@@ -136,7 +151,8 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
       bin/u09_join_test bin/u09_hash_collapse_demo \
       bin/u10_aggregate_test bin/u10_null_as_zero_demo \
       bin/u11_index_test bin/u11_split_run_demo \
-      bin/u12_batch_test bin/u12_empty_batch_demo
+      bin/u12_batch_test bin/u12_empty_batch_demo \
+      bin/u13_wal_test bin/u13_crash_test bin/u13_stale_log_demo
 	./bin/u01_page_layout_test
 	./bin/u01_slotted_test
 	./bin/u01_pager_test
@@ -168,6 +184,9 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
 	./bin/u11_split_run_demo
 	./bin/u12_batch_test
 	./bin/u12_empty_batch_demo
+	./bin/u13_wal_test
+	./bin/u13_crash_test 25
+	./bin/u13_stale_log_demo
 
 bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
        bin/u01_scan_bench bin/u02_search_bench bin/u02_insert_bench \
@@ -178,7 +197,7 @@ bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
        bin/u11_range_bench bin/u11_index_bench bin/u11_cost_bench \
        bin/u11_join_bench bin/u11_session_bench bin/u12_anatomy_bench \
        bin/u12_cost_bench bin/u12_pipeline_bench bin/u12_group_bench \
-       bin/u12_session_bench
+       bin/u12_session_bench bin/u13_durability_bench
 	./bin/u01_header_bench
 	./bin/u01_churn_bench
 	./bin/u01_fsync_bench
@@ -207,8 +226,9 @@ bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
 	./bin/u12_pipeline_bench
 	./bin/u12_group_bench
 	./bin/u12_session_bench
+	./bin/u13_durability_bench
 
 clean:
-	rm -rf bin *.db *.bin *.img
+	rm -rf bin obj *.db *.db-wal *.bin *.img
 
 .PHONY: all test bench clean

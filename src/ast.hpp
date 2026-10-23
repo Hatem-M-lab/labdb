@@ -130,7 +130,8 @@ struct SelectStmt {
 
 // A parsed statement is exactly one of the four.
 struct Statement {
-  enum class Kind { kCreate, kInsert, kSelect, kCreateIndex } kind;
+  // Unit 13: BEGIN, COMMIT and ROLLBACK carry nothing but their kind.
+  enum class Kind { kCreate, kInsert, kSelect, kCreateIndex, kBegin, kCommit, kRollback } kind;
   CreateTableStmt create;
   InsertStmt insert;
   SelectStmt select;

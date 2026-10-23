@@ -29,9 +29,11 @@ inline constexpr int kAnatomyRows = 200000;
 inline void build_events(Executor& e) {
   std::mt19937_64 rng(1103);
   e.run_sql("CREATE TABLE events (id INT64 NOT NULL, v INT64, w INT64)");
+  e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
   for (int i = 0; i < kAnatomyRows; ++i)
     e.run_sql("INSERT INTO events VALUES (" + std::to_string(i) + ", " + std::to_string(rng() % 1000000) +
               ", " + std::to_string(rng() % 1000) + ")");
+  e.run_sql("COMMIT");
 }
 
 // The steps, in the order the chapter builds them up. Each reads the first

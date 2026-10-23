@@ -95,6 +95,9 @@ inline std::string unparse(const Statement& s) {
     case Statement::Kind::kCreateIndex:
       os << "CREATE INDEX ON " << s.create_index.table << " (" << s.create_index.column << ")";
       break;
+    case Statement::Kind::kBegin: os << "BEGIN"; break;  // Unit 13
+    case Statement::Kind::kCommit: os << "COMMIT"; break;
+    case Statement::Kind::kRollback: os << "ROLLBACK"; break;
     case Statement::Kind::kInsert: {
       os << "INSERT INTO " << s.insert.table << " VALUES (";
       for (std::size_t i = 0; i < s.insert.values.size(); ++i) {

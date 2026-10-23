@@ -85,10 +85,23 @@ struct ResultSet {
 class Executor {
  public:
   explicit Executor(Catalog& catalog) : cat_(catalog) {}
+  // Unit 13: a transaction left open when the executor goes is rolled back,
+  // as a database does when a client disconnects without COMMIT.
+  ~Executor();
+  Executor(const Executor&) = delete;
+  Executor& operator=(const Executor&) = delete;
 
   // Run one parsed statement. A SELECT returns rows; CREATE and INSERT return
   // an empty result and take effect on disk.
+  //
+  // Unit 13: every statement is a transaction of its own, unless BEGIN has
+  // opened one: it commits when it succeeds and rolls back when it throws, so
+  // a statement that fails halfway -- or a process that dies halfway -- leaves
+  // nothing of itself behind. Between BEGIN and COMMIT the statements share
+  // one commit, and ROLLBACK undoes them all; an error inside the transaction
+  // rolls the whole of it back and ends it.
   ResultSet run(const Statement& stmt);
+  bool in_transaction() const { return in_txn_; }
 
   // Convenience: parse `sql` -- exactly one statement -- and run it. Parse and
   // lex errors propagate as ParseError/LexError; semantic errors as ExecError.
@@ -148,8 +161,10 @@ class Executor {
   bool literal_ = false;
   std::size_t batch_rows_ = kChoose;
   std::size_t last_batch_rows_ = 0;
+  bool in_txn_ = false;  // Unit 13: inside BEGIN ... COMMIT
   OpPtr last_plan_;
 
+  ResultSet run_statement(const Statement& stmt);  // the statement itself, no commit
   ResultSet run_create(const CreateTableStmt& s);
   ResultSet run_create_index(const CreateIndexStmt& s);
   ResultSet run_insert(const InsertStmt& s);

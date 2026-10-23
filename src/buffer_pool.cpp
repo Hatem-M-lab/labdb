@@ -10,11 +10,13 @@ BufferPool::BufferPool(Pager& pager, std::size_t capacity) : pager_(pager) {
 }
 
 BufferPool::~BufferPool() {
-  // Last-chance flush: write back anything still dirty so a caller that
+  // Last-chance commit: write back anything still dirty so a caller that
   // forgot to sync() does not silently lose an update. (A destructor cannot
   // report I/O errors usefully; sync() is the checked path.)
-  for (auto& f : frames_)
-    if (f.id != kNullPage && f.dirty) pager_.write_page(f.id, f.page);
+  try {
+    commit();
+  } catch (...) {
+  }
 }
 
 // Clock / second chance. Sweep the frames in a ring: never evict a pinned
@@ -41,8 +43,13 @@ void BufferPool::evict(std::size_t fi) {
     pager_.write_page(f.id, f.page);  // write the modified page back first
     ++disk_writes_;
   }
-  table_.erase(f.id);
   ++evictions_;
+  drop(fi);
+}
+
+void BufferPool::drop(std::size_t fi) {
+  Frame& f = frames_[fi];
+  table_.erase(f.id);
   f.id = kNullPage;
   f.dirty = false;
   f.ref = false;
@@ -93,7 +100,7 @@ void BufferPool::unpin(PageId id, bool dirty) {
   check_that(it != table_.end(), "unpin of a page that is not resident");
   Frame& f = frames_[it->second];
   check_that(f.pins > 0, "unpin of a frame that is not pinned");
-  if (dirty) f.dirty = true;
+  if (dirty) mark_dirty(it->second);
   --f.pins;
 }
 
@@ -110,14 +117,14 @@ void BufferPool::write_page(PageId id, const Page& in) {
   const bool resident = table_.count(id) != 0;
   const std::size_t fi = obtain(id, /*load_from_disk=*/resident);
   frames_[fi].page = in;              // copy the caller's bytes into the frame
-  frames_[fi].dirty = true;
+  mark_dirty(fi);
   --frames_[fi].pins;
 }
 
 PageId BufferPool::allocate_page() {
   const PageId id = pager_.allocate_page();
   const std::size_t fi = obtain(id, /*load_from_disk=*/false);  // fresh frame
-  frames_[fi].dirty = true;           // a new page must reach disk eventually
+  mark_dirty(fi);                     // a new page must reach disk eventually
   --frames_[fi].pins;
   return id;
 }
@@ -127,23 +134,53 @@ void BufferPool::free_page(PageId id) {
   if (it != table_.end()) {           // drop the frame: freed contents are void
     Frame& f = frames_[it->second];
     check_that(f.pins == 0, "free_page of a pinned page");
-    f.id = kNullPage;
-    f.dirty = false;                  // no write-back for a freed page
-    f.ref = false;
     f.page = Page{};
-    table_.erase(it);
+    drop(it->second);                 // no write-back for a freed page
   }
   pager_.free_page(id);
 }
 
 void BufferPool::sync() {
-  for (auto& f : frames_)
-    if (f.id != kNullPage && f.dirty) {
-      pager_.write_page(f.id, f.page);
-      ++disk_writes_;
-      f.dirty = false;
-    }
+  commit();
   pager_.sync();
+}
+
+void BufferPool::commit() {
+  for (std::size_t fi : dirty_list_) {
+    Frame& f = frames_[fi];
+    if (f.id == kNullPage || !f.dirty) continue;  // evicted (and so written) or listed twice
+    pager_.write_page(f.id, f.page);
+    ++disk_writes_;
+    f.dirty = false;
+  }
+  dirty_list_.clear();
+  pager_.commit();
+}
+
+void BufferPool::rollback() {
+  for (std::size_t fi : dirty_list_) {
+    Frame& f = frames_[fi];
+    if (f.id == kNullPage || !f.dirty) continue;
+    check_that(f.pins == 0, "rollback with a changed page still pinned");
+    drop(fi);
+  }
+  dirty_list_.clear();
+  // A page the transaction wrote, was evicted, and was read back is clean in
+  // the pool -- with the transaction's version in it. It goes too.
+  for (PageId id : pager_.pending_pages()) {
+    auto it = table_.find(id);
+    if (it == table_.end()) continue;
+    check_that(frames_[it->second].pins == 0, "rollback with a changed page still pinned");
+    drop(it->second);
+  }
+  pager_.rollback();
+}
+
+bool BufferPool::in_transaction() const {
+  if (pager_.in_transaction()) return true;
+  for (std::size_t fi : dirty_list_)
+    if (frames_[fi].id != kNullPage && frames_[fi].dirty) return true;
+  return false;
 }
 
 }  // namespace labdb

@@ -3,12 +3,13 @@
 > **This is the companion source code for the book**
 > **[Build a SQL Database Engine in C++ — Through Challenges](https://leanpub.com/buildasqldatabaseengineinc)**,
 > covering Part I (Storage, Units 1–4), Part II (From Bytes to a Query,
-> Units 5–8), and Part III (Making It Fast & Real, Units 9–12). Every listing
+> Units 5–8), Part III (Making It Fast & Real, Units 9–12), and Unit 13 of
+> Part IV (Durability & Capstone). Every listing
 > in the book compiles exactly as printed; this repository is that code, one
 > unit at a time.
 >
 > **Following along with the book?** `git checkout unit-04` (or any
-> `unit-01` through `unit-12`) to get the exact code state that unit's
+> `unit-01` through `unit-13`) to get the exact code state that unit's
 > chapter shows. The `main` branch always has the latest, full engine.
 
 The SQL database engine built, one challenge at a time, in *Build a SQL
@@ -27,7 +28,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 12 (vectorized execution) -- the engine joins tables, groups and summarizes them (`GROUP BY`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `HAVING`), orders and limits results (`ORDER BY`, `LIMIT`), has secondary indexes (`CREATE INDEX`) and a cost-based planner, and runs its plans in batches of 1,024 rows held as columns -- all but the smallest, which run a row at a time -- reading rows where they lie in the buffer pool.
+Current state: Unit 13 (write-ahead log and crash recovery) -- every page goes through a write-ahead log, every statement is a transaction (`BEGIN`, `COMMIT`, `ROLLBACK` for several), and the database recovers from a crash at any write; the engine joins tables, groups and summarizes them (`GROUP BY`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `HAVING`), orders and limits results (`ORDER BY`, `LIMIT`), has secondary indexes (`CREATE INDEX`) and a cost-based planner, and runs its plans in batches of 1,024 rows held as columns -- all but the smallest, which run a row at a time -- reading rows where they lie in the buffer pool.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -98,3 +99,13 @@ Current state: Unit 12 (vectorized execution) -- the engine joins tables, groups
   batch runs a row at a time.
   Run `sh scripts/run_unit12.sh`, or `./bin/u12_empty_batch_demo` for the trap:
   a filter whose answer depends on the batch size.
+- Unit 13 -- write-ahead log and crash recovery (Part IV begins): every page a
+  transaction writes goes to a log of checksummed page images first; a commit
+  is one append and, by default, one fsync; recovery redoes what the log holds
+  a commit for, and checkpoints copy the log into the database file. Every
+  statement is atomic, and `BEGIN` / `COMMIT` / `ROLLBACK` make transactions of
+  many. Crashed at each of the 804 writes and syncs of a workload, as a dying
+  process and as a power cut, and by 300 `kill -9`s: every time exactly what it had
+  acknowledged. Run `sh scripts/run_unit13.sh`, or `./bin/u13_stale_log_demo`
+  for the trap: a log that, after a crash, remembered transactions from before
+  its last checkpoint.

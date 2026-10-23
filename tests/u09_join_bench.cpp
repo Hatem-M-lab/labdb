@@ -98,12 +98,14 @@ int main() {
   e.run_sql("CREATE TABLE customers (id INT64 NOT NULL, name TEXT, vip BOOL)");
   e.run_sql("CREATE TABLE orders (oid INT64 NOT NULL, customer INT32 NOT NULL, cents INT32 NOT NULL)");
   const int kCustomers = 20000, kOrders = 200000;
+  e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
   for (int i = 0; i < kCustomers; ++i)
     e.run_sql("INSERT INTO customers VALUES (" + std::to_string(i) + ", 'name_" +
               std::to_string(i) + "', " + (i % 10 == 0 ? "TRUE" : "FALSE") + ")");
   for (int i = 0; i < kOrders; ++i)
     e.run_sql("INSERT INTO orders VALUES (" + std::to_string(i) + ", " +
               std::to_string(i % kCustomers) + ", " + std::to_string((i * 7) % 100000) + ")");
+  e.run_sql("COMMIT");
 
   std::printf("a SQL session with joins, against %d customers and %d orders:\n\n",
               kCustomers, kOrders);
@@ -124,12 +126,14 @@ int main() {
     std::vector<int> perm(n);
     std::iota(perm.begin(), perm.end(), 0);
     std::shuffle(perm.begin(), perm.end(), rng);  // a row i matches b row perm[i]
+    e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
     for (int i = 0; i < n; ++i) {
       e.run_sql("INSERT INTO " + A + " VALUES (" + std::to_string(i) + ", " +
                 std::to_string(perm[i]) + ", " + std::to_string(rng() % 1000) + ")");
       e.run_sql("INSERT INTO " + B + " VALUES (" + std::to_string(i) + ", " +
                 std::to_string(rng() % 1000) + ")");
     }
+    e.run_sql("COMMIT");
   }
 
   std::printf("the golden experiment: SELECT a.id, b.y FROM a JOIN b ON a.b_id = b.id\n"

@@ -18,12 +18,11 @@
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
-engine="io pager btree buffer_pool heap catalog parser executor operator"
 missed=0
 
 run() {  # build the copy in $tmp/w and run the test there
   files=""
-  for f in $engine; do files="$files $tmp/w/src/$f.cpp"; done
+  files=$(ls "$tmp"/w/src/*.cpp)  # every engine source
   g++ -std=c++20 -O2 -I"$tmp/w/src" -I"$tmp/w/tests" "$tmp/w/tests/u12_batch_test.cpp" $files -o "$tmp/w/test"
   # (a planted bug ends the test with abort(); the inner shell's report of it is dropped)
   (cd "$tmp/w" && ulimit -v 4000000 && sh -c 'timeout 300 ./test > out.txt 2>&1' 2>/dev/null)

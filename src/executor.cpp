@@ -904,12 +904,53 @@ std::string Executor::explain_last(bool estimates) const {
   return last_plan_ ? plan_text(*last_plan_, estimates) : "(no SELECT has run)\n";
 }
 
+Executor::~Executor() {
+  if (!in_txn_) return;
+  try {
+    cat_.pool().rollback();
+  } catch (...) {
+    // a destructor cannot report; the log has nothing of the transaction committed
+  }
+}
+
 ResultSet Executor::run(const Statement& stmt) {
+  BufferPool& pool = cat_.pool();
+  switch (stmt.kind) {
+    case Statement::Kind::kBegin:
+      if (in_txn_) throw ExecError{"BEGIN inside a transaction"};
+      in_txn_ = true;
+      return {};
+    case Statement::Kind::kCommit:
+      if (!in_txn_) throw ExecError{"COMMIT without BEGIN"};
+      in_txn_ = false;
+      pool.commit();
+      return {};
+    case Statement::Kind::kRollback:
+      if (!in_txn_) throw ExecError{"ROLLBACK without BEGIN"};
+      in_txn_ = false;
+      pool.rollback();
+      return {};
+    default:
+      break;
+  }
+  try {
+    ResultSet r = run_statement(stmt);
+    if (!in_txn_) pool.commit();  // nothing written: nothing to do
+    return r;
+  } catch (...) {
+    in_txn_ = false;
+    pool.rollback();
+    throw;
+  }
+}
+
+ResultSet Executor::run_statement(const Statement& stmt) {
   switch (stmt.kind) {
     case Statement::Kind::kCreate: return run_create(stmt.create);
     case Statement::Kind::kCreateIndex: return run_create_index(stmt.create_index);
     case Statement::Kind::kInsert: return run_insert(stmt.insert);
     case Statement::Kind::kSelect: return run_select(stmt.select);
+    default: break;
   }
   throw ExecError{"unknown statement kind"};
 }

@@ -11,6 +11,13 @@
 // Replacement policy: clock (second chance). Dirty frames are written back
 // on eviction and on flush. A pinned frame is never chosen as a victim.
 //
+// Unit 13: "written back" now means written to the pager's log, as part of
+// the transaction in progress -- an evicted page of an uncommitted
+// transaction goes to the log too, where only that transaction can see it
+// until it commits. commit() writes every dirty frame there and commits;
+// rollback() drops every frame the transaction changed and rolls the log
+// back.
+//
 // It deliberately presents the SAME read/write/allocate/free/root/meter
 // surface the pager did, so the B+Tree sits on top of it with only a change
 // of type: the tree asks for pages exactly as before and is transparently
@@ -33,7 +40,7 @@ class BufferPool {
   // most pages any single operation pins at once -- a small handful for the
   // B+Tree (a root-to-leaf path plus a sibling or two).
   BufferPool(Pager& pager, std::size_t capacity);
-  ~BufferPool();  // flushes dirty frames so no update is lost on shutdown
+  ~BufferPool();  // commits dirty frames so no update is lost on shutdown
 
   BufferPool(const BufferPool&) = delete;
   BufferPool& operator=(const BufferPool&) = delete;
@@ -53,7 +60,16 @@ class BufferPool {
   void write_page(PageId id, const Page& in);
   PageId allocate_page();
   void free_page(PageId id);
-  void sync();  // flush dirty frames, then fsync via the pager
+  void sync();  // commit, then checkpoint and fsync via the pager
+
+  // Unit 13: end the transaction in progress (Pager::commit, ::rollback).
+  // commit() first writes every dirty frame to the log. rollback() drops the
+  // frames the transaction changed -- the dirty ones, and any clean copy of a
+  // page whose only newer version is the transaction's -- so the next read
+  // of each finds the last committed version. No frame may be pinned.
+  void commit();
+  void rollback();
+  bool in_transaction() const;
 
   PageId btree_root() const { return pager_.btree_root(); }
   void set_btree_root(PageId id) { pager_.set_btree_root(id); }
@@ -103,10 +119,20 @@ class BufferPool {
   std::size_t obtain(PageId id, bool load_from_disk);
   std::size_t choose_victim();  // clock sweep; returns an unpinned frame index
   void evict(std::size_t fi);   // write back if dirty, then drop the mapping
+  // Unit 13: every frame that turns dirty is listed, so that a commit visits
+  // the frames its transaction changed and not the whole pool.
+  void mark_dirty(std::size_t fi) {
+    if (!frames_[fi].dirty) {
+      frames_[fi].dirty = true;
+      dirty_list_.push_back(fi);
+    }
+  }
+  void drop(std::size_t fi);    // forget the frame's page, written or not
 
   Pager& pager_;
   std::vector<Frame> frames_;
   std::unordered_map<PageId, std::size_t> table_;
+  std::vector<std::size_t> dirty_list_;  // frames dirtied since the last commit (may repeat)
   std::size_t hand_ = 0;
   bool writeback_ = true;
 

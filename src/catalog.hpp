@@ -223,6 +223,10 @@ class Catalog {
   // a page it asks for is already in memory.
   std::size_t pool_frames() const { return pool_.capacity(); }
 
+  // Unit 13: the pool the catalog's tables live in -- where the executor
+  // commits and rolls back its transactions.
+  BufferPool& pool() { return pool_; }
+
   // Unit 12: read rows as Unit 11 did -- every row copies its page out of the
   // pool, then its record, and decodes a newly allocated Row -- so that the old
   // way and the new can be measured side by side, in one build. Applies to the

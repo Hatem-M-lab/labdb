@@ -55,8 +55,10 @@ int main() {
       pager.write_page(id, page);
     }
     REQUIRE(pager.page_count() == 6);
-    REQUIRE(file_size(path) == 6 * 4096);
+    // Unit 13: the pages live in the write-ahead log until a checkpoint copies
+    // them into the file; sync() is one.
     pager.sync();
+    REQUIRE(file_size(path) == 6 * 4096);
   }  // destructor closes the file
   std::printf("PASS create+allocate: 5 data pages, file is %lld bytes\n",
               static_cast<long long>(file_size(path)));
@@ -106,6 +108,11 @@ int main() {
     REQUIRE(pager.allocate_page() == 2);
     REQUIRE(file_size(path) == 6 * 4096);
     REQUIRE(pager.allocate_page() == 6);  // list empty: extend
+    REQUIRE(pager.page_count() == 7);
+    Page grown;
+    grown.set_id(6);
+    pager.write_page(6, grown);
+    pager.sync();  // Unit 13: the file grows when the log is checkpointed
     REQUIRE(file_size(path) == 7 * 4096);
     std::printf(
         "PASS reuse: allocations returned 4, 2 (recycled), then 6 (extend)\n");

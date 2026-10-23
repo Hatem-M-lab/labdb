@@ -223,9 +223,11 @@ int main(int argc, char** argv) {
     Executor e(cat);
     std::mt19937_64 r(1103);
     e.run_sql("CREATE TABLE events (id INT64 NOT NULL, v INT64, w INT64)");
+    e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
     for (int i = 0; i < 200000; ++i)
       e.run_sql("INSERT INTO events VALUES (" + std::to_string(i) + ", " + std::to_string(r() % 1000000) + ", " +
                 std::to_string(r() % 1000) + ")");
+    e.run_sql("COMMIT");
   }
   {
     Pager pager(path);

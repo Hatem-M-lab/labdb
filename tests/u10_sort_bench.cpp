@@ -158,9 +158,11 @@ int main() {
   Catalog cat(pool);
   Executor e(cat);
   e.run_sql("CREATE TABLE orders (oid INT64 NOT NULL, customer INT64, cents INT64)");
+  e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
   for (int i = 0; i < 200000; ++i)
     e.run_sql("INSERT INTO orders VALUES (" + std::to_string(i) + ", " +
               std::to_string(rng() % 20000) + ", " + std::to_string(rng() % 1000000) + ")");
+  e.run_sql("COMMIT");
 
   const std::string top_sql = "SELECT oid, cents FROM orders ORDER BY cents DESC LIMIT 10";
   std::printf("\nagainst 200,000 orders on disk (all pages cached), median of %d runs:\n\n", kReps);

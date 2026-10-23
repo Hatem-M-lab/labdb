@@ -147,9 +147,11 @@ int main() {
     Executor e(cat);
     e.run_sql("CREATE TABLE orders (oid INT64 NOT NULL, customer INT32 NOT NULL, cents INT32 NOT NULL)");
     const int kTable = 200'000;
+    e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
     for (int i = 0; i < kTable; ++i)
       e.run_sql("INSERT INTO orders VALUES (" + std::to_string(i) + ", " +
                 std::to_string(rows[i][1].i64) + ", " + std::to_string(rows[i][2].i64) + ")");
+    e.run_sql("COMMIT");
 
     std::size_t m1 = 0, m2 = 0;
     const double seq = ns_per_row(

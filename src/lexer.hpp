@@ -205,6 +205,9 @@ class Lexer {
     if (u == "DESC") return TokenType::kDesc;
     if (u == "LIMIT") return TokenType::kLimit;
     if (u == "INDEX") return TokenType::kIndex;
+    if (u == "BEGIN") return TokenType::kBegin;        // Unit 13
+    if (u == "COMMIT") return TokenType::kCommit;
+    if (u == "ROLLBACK") return TokenType::kRollback;
     return TokenType::kIdentifier;
   }
 };

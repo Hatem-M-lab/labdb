@@ -64,8 +64,18 @@ Statement Parser::parse_statement() {
     case TokenType::kCreate: return parse_create();
     case TokenType::kInsert: return parse_insert();
     case TokenType::kSelect: return parse_select();
+    case TokenType::kBegin:  // Unit 13: a transaction's bounds
+    case TokenType::kCommit:
+    case TokenType::kRollback: {
+      Statement s;
+      const TokenType t = advance().type;
+      s.kind = t == TokenType::kBegin    ? Statement::Kind::kBegin
+               : t == TokenType::kCommit ? Statement::Kind::kCommit
+                                         : Statement::Kind::kRollback;
+      return s;
+    }
     default:
-      fail("expected a statement (CREATE, INSERT, or SELECT)");
+      fail("expected a statement (CREATE, INSERT, SELECT, BEGIN, COMMIT, or ROLLBACK)");
   }
 }
 

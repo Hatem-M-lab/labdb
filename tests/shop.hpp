@@ -22,6 +22,7 @@ inline void build_shop(Executor& e) {
   const char* cities[] = {"Cairo", "Lagos", "Lima", "Oslo", "Pune", "Quito",
                           "Riga", "Seoul", "Tunis", "Turin", "Vigo", "Zagreb"};
   e.run_sql("CREATE TABLE customers (id INT64 NOT NULL, name TEXT, city TEXT)");
+  e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
   for (int i = 0; i < 20000; ++i) {
     const std::uint64_t u = rng() % 1000;
     const int city = static_cast<int>(u * u * 12 / 1000000);  // skewed toward the first cities
@@ -36,6 +37,7 @@ inline void build_shop(Executor& e) {
     e.run_sql("INSERT INTO orders VALUES (" + std::to_string(i) + ", " + std::to_string(customer) + ", " +
               std::to_string(cents) + ", " + std::to_string(1 + rng() % 365) + ")");
   }
+  e.run_sql("COMMIT");
 }
 
 // One query, planned as Unit 10 planned it (literal planning) and by Unit 11's

@@ -86,9 +86,11 @@ int main() {
     Catalog cat(pool);
     Executor e(cat);
     e.run_sql("CREATE TABLE events (id INT64 NOT NULL, v INT64, w INT64)");
+    e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
     for (int i = 0; i < kRows; ++i)
       e.run_sql("INSERT INTO events VALUES (" + std::to_string(i) + ", " +
                 std::to_string(rng() % kDomain) + ", " + std::to_string(rng() % 1000) + ")");
+    e.run_sql("COMMIT");
     e.run_sql("CREATE INDEX ON events (v)");
   }
 

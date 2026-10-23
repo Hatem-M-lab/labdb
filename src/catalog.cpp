@@ -16,6 +16,9 @@ Catalog::Catalog(BufferPool& pool) : pool_(pool), cat_page_(pool.catalog_root())
     set_slot_count(p, 0);
     pool_.write_page(cat_page_, p);
     pool_.set_catalog_root(cat_page_);
+    // Unit 13: committed at once, so that no later rollback can take away
+    // the page this object goes on naming.
+    pool_.commit();
   }
 }
 

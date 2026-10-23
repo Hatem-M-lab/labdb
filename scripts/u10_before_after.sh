@@ -59,11 +59,10 @@ printf '  full-scan rows/s       %-28s %s\n' "$(stat "$tmp/old.txt" 3)" "$(stat 
 # move by a fifth from run to run. Needs valgrind; skipped without it. The
 # probe (tools/u10_query_probe.cpp) is built against each tree's engine.
 if command -v valgrind >/dev/null 2>&1; then
-  engine="io pager btree buffer_pool heap catalog parser executor operator"
   for side in base root; do
     if [ "$side" = base ]; then src="$tmp/base"; else src="$root"; fi
     files=""
-    for f in $engine; do files="$files $src/src/$f.cpp"; done
+    files=$(ls "$src"/src/*.cpp)  # every engine source, whichever unit the tree is at
     g++ -std=c++20 -O2 -I"$src/src" -I"$src/tests" "$root/tools/u10_query_probe.cpp" $files \
       -o "$tmp/probe_$side"
   done
