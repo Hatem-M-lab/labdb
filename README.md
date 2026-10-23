@@ -2,21 +2,24 @@
 
 > **This is the companion source code for the book**
 > **[Build a SQL Database Engine in C++ — Through Challenges](https://leanpub.com/buildasqldatabaseengineinc)**,
-> covering Part I (Storage, Units 1–4), Part II (From Bytes to a Query,
-> Units 5–8), Part III (Making It Fast & Real, Units 9–12), and Unit 13 of
-> Part IV (Durability & Capstone). Every listing
-> in the book compiles exactly as printed; this repository is that code, one
-> unit at a time.
+> all four parts: Part I (Storage, Units 1–4), Part II (From Bytes to a
+> Query, Units 5–8), Part III (Making It Fast & Real, Units 9–12), and Part
+> IV (Durability & Capstone, Units 13–14). Every listing in the book compiles
+> exactly as printed; this repository is that code, one unit at a time.
 >
 > **Following along with the book?** `git checkout unit-04` (or any
-> `unit-01` through `unit-13`) to get the exact code state that unit's
-> chapter shows. The `main` branch always has the latest, full engine.
+> `unit-01` through `unit-14`) to get the exact code state that unit's
+> chapter shows. The `main` branch has the full engine.
 
 The SQL database engine built, one challenge at a time, in *Build a SQL
 Database Engine in C++ -- Through Challenges*. C++20, standard library and
 POSIX only. Everything compiles with:
 
     g++ -std=c++20 -O2 -Wall -Wextra
+
+Unit 14 compares the engine with PostgreSQL and SQLite, and runs those
+comparisons only where they are installed (PostgreSQL's server programs and
+`psql`; SQLite's `libsqlite3-dev`); everything else needs nothing more.
 
 Layout:
 
@@ -27,8 +30,12 @@ Layout:
                 kept so every listing in the book compiles as printed
     scripts/    one-command reproduction of each unit's results
 
-Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 13 (write-ahead log and crash recovery) -- every page goes through a write-ahead log, every statement is a transaction (`BEGIN`, `COMMIT`, `ROLLBACK` for several), and the database recovers from a crash at any write; the engine joins tables, groups and summarizes them (`GROUP BY`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `HAVING`), orders and limits results (`ORDER BY`, `LIMIT`), has secondary indexes (`CREATE INDEX`) and a cost-based planner, and runs its plans in batches of 1,024 rows held as columns -- all but the smallest, which run a row at a time -- reading rows where they lie in the buffer pool.
+Commands: `make all`, `make test`, `make bench`, `make clean`. And the
+engine as a program: `./bin/labdb DATABASE` reads SQL from standard input
+(`-c "SQL"` for statements on the command line, `--plain` for rows as
+`a|b|c`), with `.tables`, `.explain` and `.quit`.
+
+Current state: Unit 14 (the capstone) -- the engine is a program, its answers agree with PostgreSQL's on 20,000 generated statements, and it is measured against SQLite doing the same work. Every page goes through a write-ahead log, every statement is a transaction (`BEGIN`, `COMMIT`, `ROLLBACK` for several), and the database recovers from a crash at any write; the engine joins tables, groups and summarizes them (`GROUP BY`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `HAVING`), orders and limits results (`ORDER BY`, `LIMIT`), has secondary indexes (`CREATE INDEX`) and a cost-based planner, and runs its plans in batches of 1,024 rows held as columns -- all but the smallest, which run a row at a time -- reading rows where they lie in the buffer pool.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -109,3 +116,13 @@ Current state: Unit 13 (write-ahead log and crash recovery) -- every page goes t
   acknowledged. Run `sh scripts/run_unit13.sh`, or `./bin/u13_stale_log_demo`
   for the trap: a log that, after a crash, remembered transactions from before
   its last checkpoint.
+- Unit 14 -- the capstone (Part IV ends): the engine as a program, `labdb`,
+  and the engine held to two references. Against PostgreSQL, the same three
+  tables and 20,000 generated statements in both, every answer compared row
+  by row: no differences, and the errors both raise printed side by side --
+  and eight bugs planted one at a time in copies of the engine, every one
+  caught. Against SQLite, the same work in the same process: the shop loaded,
+  commits, point lookups, the twelve questions of the sessions, and every page
+  of the two files counted. Run `sh scripts/run_unit14.sh`, or
+  `./bin/u14_literal_probe` for the trap: the numbers the engine could not
+  write, which no test in thirteen units had written either.

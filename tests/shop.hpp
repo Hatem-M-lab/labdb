@@ -17,27 +17,37 @@
 
 namespace labdb::test {
 
-inline void build_shop(Executor& e) {
+// The shop's statements, in order, handed to `run` one at a time -- so that
+// Unit 14 can give exactly the same ones to SQLite, with its own two CREATE
+// TABLEs in place of labdb's.
+template <class Run>
+inline void shop_statements(Run&& run, const std::string& customers_ddl, const std::string& orders_ddl) {
   std::mt19937_64 rng(1005);
   const char* cities[] = {"Cairo", "Lagos", "Lima", "Oslo", "Pune", "Quito",
                           "Riga", "Seoul", "Tunis", "Turin", "Vigo", "Zagreb"};
-  e.run_sql("CREATE TABLE customers (id INT64 NOT NULL, name TEXT, city TEXT)");
-  e.run_sql("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
+  run(customers_ddl);
+  run("BEGIN");  // Unit 13: one transaction, so one commit, for the whole load
   for (int i = 0; i < 20000; ++i) {
     const std::uint64_t u = rng() % 1000;
     const int city = static_cast<int>(u * u * 12 / 1000000);  // skewed toward the first cities
-    e.run_sql("INSERT INTO customers VALUES (" + std::to_string(i) + ", 'name_" + std::to_string(i) +
-              "', '" + cities[city] + "')");
+    run("INSERT INTO customers VALUES (" + std::to_string(i) + ", 'name_" + std::to_string(i) + "', '" +
+        cities[city] + "')");
   }
-  e.run_sql("CREATE TABLE orders (oid INT64 NOT NULL, customer INT64, cents INT64, day INT32)");
+  run(orders_ddl);
   for (int i = 0; i < 200000; ++i) {
     const std::uint64_t u = rng() % 20000;
     const std::uint64_t customer = (u * u) / 20000;  // low ids order more often
     const std::uint64_t cents = 100 + (rng() % 1000) * (rng() % 1000) / 10;  // mostly small
-    e.run_sql("INSERT INTO orders VALUES (" + std::to_string(i) + ", " + std::to_string(customer) + ", " +
-              std::to_string(cents) + ", " + std::to_string(1 + rng() % 365) + ")");
+    run("INSERT INTO orders VALUES (" + std::to_string(i) + ", " + std::to_string(customer) + ", " +
+        std::to_string(cents) + ", " + std::to_string(1 + rng() % 365) + ")");
   }
-  e.run_sql("COMMIT");
+  run("COMMIT");
+}
+
+inline void build_shop(Executor& e) {
+  shop_statements([&](const std::string& sql) { e.run_sql(sql); },
+                  "CREATE TABLE customers (id INT64 NOT NULL, name TEXT, city TEXT)",
+                  "CREATE TABLE orders (oid INT64 NOT NULL, customer INT64, cents INT64, day INT32)");
 }
 
 // One query, planned as Unit 10 planned it (literal planning) and by Unit 11's

@@ -326,7 +326,9 @@ Statement Parser::parse_select() {
   }
   if (check(TokenType::kLimit)) {
     advance();
-    s.select.limit = expect(TokenType::kIntLiteral, "a row count after LIMIT").int_val;
+    const Token& n = expect(TokenType::kIntLiteral, "a row count after LIMIT");
+    if (n.int_val < 0) throw ParseError{"LIMIT must not be negative", n.line, n.col};  // Unit 14
+    s.select.limit = n.int_val;
   }
   return s;
 }

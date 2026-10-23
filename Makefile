@@ -1,5 +1,7 @@
 # labdb -- everything builds with the book's exact flags. No dependencies
-# beyond a C++20 compiler and POSIX.
+# beyond a C++20 compiler and POSIX -- except Unit 14's comparisons with
+# PostgreSQL and SQLite, which run when those are installed and are skipped
+# when they are not.
 CXX      := g++
 CXXFLAGS := -std=c++20 -O2 -Wall -Wextra
 INC      := -Isrc -Itests
@@ -7,10 +9,18 @@ ENGINE   := src/io.cpp src/wal.cpp src/pager.cpp src/btree.cpp src/buffer_pool.c
             src/heap.cpp src/catalog.cpp src/parser.cpp src/executor.cpp \
             src/operator.cpp
 HDRS     := $(wildcard src/*.hpp) tests/harness.hpp tests/show.hpp tests/shop.hpp tests/anatomy.hpp \
-            tests/interleave.hpp tests/crashsim.hpp tests/u13_workload.hpp
+            tests/interleave.hpp tests/crashsim.hpp tests/u13_workload.hpp tests/error_text.hpp
 # Unit 13: the engine is compiled once, into objects, and every program is
 # linked against them -- the same flags, the same code, a much shorter build.
 OBJ      := $(patsubst src/%.cpp,obj/%.o,$(ENGINE))
+
+# Unit 14: labdb against SQLite needs SQLite's library and header
+# (libsqlite3-dev). Without them the benchmark is not built, and nothing else
+# needs them.
+HAVE_SQLITE := $(shell printf '\043include <sqlite3.h>\n' | $(CXX) -E -x c++ - >/dev/null 2>&1 && echo yes)
+ifeq ($(HAVE_SQLITE),yes)
+SQLITE_BENCH := bin/u14_sqlite_bench
+endif
 
 TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
          u01_churn_bench u01_pager_test u01_fsync_bench \
@@ -30,7 +40,8 @@ TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
          u11_join_bench u11_session_bench \
          u12_batch_test u12_anatomy_bench u12_cost_bench u12_pipeline_bench \
          u12_group_bench u12_session_bench \
-         u13_wal_test u13_crash_test u13_durability_bench
+         u13_wal_test u13_crash_test u13_durability_bench \
+         u14_pg_diff
 
 BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u01_c12_smoke bin/u01_c14_smoke bin/u02_median_bug_demo \
@@ -40,9 +51,9 @@ BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u09_hash_collapse_demo bin/u09_null_probe \
         bin/u10_null_as_zero_demo bin/u10_query_probe bin/u11_split_run_demo \
         bin/u11_insert_probe bin/u12_row_probe bin/u12_empty_batch_demo \
-        bin/u13_stale_log_demo
+        bin/u13_stale_log_demo bin/labdb bin/u14_literal_probe
 
-all: $(BINS)
+all: $(BINS) $(SQLITE_BENCH)
 
 bin:
 	mkdir -p bin
@@ -126,6 +137,18 @@ bin/u10_query_probe: tools/u10_query_probe.cpp $(OBJ) $(HDRS) | bin
 bin/u04_lost_update_demo: tools/u04_lost_update_demo.cpp $(OBJ) $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
 
+bin/u14_sqlite_bench: tests/u14_sqlite_bench.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -lsqlite3 -o $@
+
+# Unit 14's trap probe uses only run_sql, so it builds against any unit's
+# engine from Unit 8 on (scripts/u14_before_after.sh builds it twice).
+bin/u14_literal_probe: tools/u14_literal_probe.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
+
+# Unit 14: the engine as a program -- SQL in, results out.
+bin/labdb: tools/labdb.cpp $(OBJ) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
+
 # Unit 13's forensic trap: a log reset without a new generation, replayed after a crash.
 bin/u13_stale_log_demo: tools/u13_stale_log_demo.cpp $(OBJ) $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< $(OBJ) -o $@
@@ -152,7 +175,8 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
       bin/u10_aggregate_test bin/u10_null_as_zero_demo \
       bin/u11_index_test bin/u11_split_run_demo \
       bin/u12_batch_test bin/u12_empty_batch_demo \
-      bin/u13_wal_test bin/u13_crash_test bin/u13_stale_log_demo
+      bin/u13_wal_test bin/u13_crash_test bin/u13_stale_log_demo \
+      bin/u14_literal_probe bin/labdb bin/u14_pg_diff
 	./bin/u01_page_layout_test
 	./bin/u01_slotted_test
 	./bin/u01_pager_test
@@ -187,6 +211,9 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
 	./bin/u13_wal_test
 	./bin/u13_crash_test 25
 	./bin/u13_stale_log_demo
+	./bin/u14_literal_probe --check
+	sh scripts/u14_shell_check.sh
+	sh scripts/u14_postgres_check.sh 1000
 
 bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
        bin/u01_scan_bench bin/u02_search_bench bin/u02_insert_bench \
@@ -197,7 +224,7 @@ bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
        bin/u11_range_bench bin/u11_index_bench bin/u11_cost_bench \
        bin/u11_join_bench bin/u11_session_bench bin/u12_anatomy_bench \
        bin/u12_cost_bench bin/u12_pipeline_bench bin/u12_group_bench \
-       bin/u12_session_bench bin/u13_durability_bench
+       bin/u12_session_bench bin/u13_durability_bench $(SQLITE_BENCH)
 	./bin/u01_header_bench
 	./bin/u01_churn_bench
 	./bin/u01_fsync_bench
@@ -227,6 +254,8 @@ bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
 	./bin/u12_group_bench
 	./bin/u12_session_bench
 	./bin/u13_durability_bench
+	@if [ -x bin/u14_sqlite_bench ]; then ./bin/u14_sqlite_bench; \
+	 else echo "u14_sqlite_bench: SQLite's header and library (libsqlite3-dev) not found: skipped"; fi
 
 clean:
 	rm -rf bin obj *.db *.db-wal *.bin *.img

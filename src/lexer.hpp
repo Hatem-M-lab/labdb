@@ -84,6 +84,9 @@ class Lexer {
     const char c = peek();
     if (ident_start(c)) return lex_word(t);
     if (std::isdigit((unsigned char)c)) return lex_number(t);
+    // Unit 14: a '-' touching a digit is the sign of a number. The grammar has
+    // no arithmetic, so a '-' is never anything else.
+    if (c == '-' && std::isdigit((unsigned char)peek2())) return lex_number(t);
     if (c == '\'') return lex_string(t);
     return lex_operator(t);
   }
@@ -98,9 +101,12 @@ class Lexer {
 
   // Digits, and optionally a '.' followed by more digits (Unit 10): `42` is an
   // integer, `3.5` a decimal. A '.' NOT followed by a digit is left alone, so
-  // it can still be the dot of a qualified name.
+  // it can still be the dot of a qualified name. Unit 14: an optional leading
+  // '-', and an integer too large for 64 bits is an error, not an exception
+  // from the standard library.
   Token lex_number(Token& t) {
     const std::size_t start = pos_;
+    if (peek() == '-') advance();
     while (!done() && std::isdigit((unsigned char)peek())) advance();
     if (peek() == '.' && std::isdigit((unsigned char)peek2())) {
       advance();  // the '.'
@@ -112,7 +118,8 @@ class Lexer {
     }
     t.text = src_.substr(start, pos_ - start);
     t.type = TokenType::kIntLiteral;
-    t.int_val = std::stoll(t.text);
+    const auto r = std::from_chars(t.text.data(), t.text.data() + t.text.size(), t.int_val);
+    if (r.ec != std::errc{}) error("integer literal out of range: " + t.text, t.line, t.col);
     return t;
   }
 
