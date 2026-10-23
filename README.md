@@ -3,12 +3,12 @@
 > **This is the companion source code for the book**
 > **[Build a SQL Database Engine in C++ — Through Challenges](https://leanpub.com/buildasqldatabaseengineinc)**,
 > covering Part I (Storage, Units 1–4), Part II (From Bytes to a Query,
-> Units 5–8), and Part III as it is written (Unit 9 onward). Every listing in
-> the book compiles exactly as printed; this repository is that code, one
+> Units 5–8), and Part III (Making It Fast & Real, Units 9–12). Every listing
+> in the book compiles exactly as printed; this repository is that code, one
 > unit at a time.
 >
 > **Following along with the book?** `git checkout unit-04` (or any
-> `unit-01` through `unit-11`) to get the exact code state that unit's
+> `unit-01` through `unit-12`) to get the exact code state that unit's
 > chapter shows. The `main` branch always has the latest, full engine.
 
 The SQL database engine built, one challenge at a time, in *Build a SQL
@@ -27,7 +27,7 @@ Layout:
     scripts/    one-command reproduction of each unit's results
 
 Commands: `make all`, `make test`, `make bench`, `make clean`.
-Current state: Unit 11 (indexes and the planner) -- the engine joins tables, groups and summarizes them (`GROUP BY`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `HAVING`), orders and limits results (`ORDER BY`, `LIMIT`), and has secondary indexes (`CREATE INDEX`) and a cost-based planner that chooses between scans, key ranges, indexes, and join algorithms.
+Current state: Unit 12 (vectorized execution) -- the engine joins tables, groups and summarizes them (`GROUP BY`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `HAVING`), orders and limits results (`ORDER BY`, `LIMIT`), has secondary indexes (`CREATE INDEX`) and a cost-based planner, and runs its plans in batches of 1,024 rows held as columns -- all but the smallest, which run a row at a time -- reading rows where they lie in the buffer pool.
 
 - Unit 1 -- slotted pages and the pager: self-describing 4 KiB pages,
   variable-length records with stable slot ids, a pager with an intrusive
@@ -81,3 +81,20 @@ Current state: Unit 11 (indexes and the planner) -- the engine joins tables, gro
   Run `sh scripts/run_unit09.sh` (about 5 minutes), or
   `./bin/u09_hash_collapse_demo` for the forensic trap: a hash join that is
   right on every test and 67x slower on one real key column.
+- Unit 10 -- aggregation: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP BY`
+  through a hash table of groups, `HAVING`, `ORDER BY` with a top-n heap, and
+  `LIMIT` that stops the pipeline early. Run `sh scripts/run_unit10.sh`, or
+  `./bin/u10_null_as_zero_demo` for the forensic trap.
+- Unit 11 -- indexes and the planner: ranges of the key, `CREATE INDEX` over a
+  B+Tree that keeps duplicate keys, a cost model with constants measured on
+  the machine, and joins planned by cost (build side, index nested-loop join).
+  Run `sh scripts/run_unit11.sh`, or `./bin/u11_split_run_demo` for the trap.
+- Unit 12 -- vectorized execution (Part III ends): rows read where they lie in
+  the buffer pool instead of copied out a page at a time, then every operator
+  given a batch path beside its row path -- 1,024 rows a call, one array per
+  column, filters that mark rows instead of moving them. A scanned row costs a
+  tenth of what it did, the index break-even moves from half the table to a
+  sixth, a group shrinks from 224 bytes to 51, and a plan too small to repay a
+  batch runs a row at a time.
+  Run `sh scripts/run_unit12.sh`, or `./bin/u12_empty_batch_demo` for the trap:
+  a filter whose answer depends on the batch size.

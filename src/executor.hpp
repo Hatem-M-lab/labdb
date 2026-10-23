@@ -50,19 +50,28 @@ namespace labdb {
 
 // Unit 11: the cost model. The planner compares plans by their estimated time
 // in nanoseconds, built from these per-row costs, measured on this book's
-// machine by tests/u11_cost_bench.cpp (Challenge 11.3). They are this
-// machine's numbers, not universal ones; PostgreSQL ships constants of the
-// same kind (seq_page_cost, random_page_cost, cpu_tuple_cost) as settings,
-// for the same reason.
+// machine (Challenge 11.3). They are this machine's numbers, not universal
+// ones; PostgreSQL ships constants of the same kind (seq_page_cost,
+// random_page_cost, cpu_tuple_cost) as settings, for the same reason.
+// Unit 12: measured again, for plans that run in batches, by
+// tests/u12_cost_bench.cpp (Challenge 12.6) -- the medians of four runs,
+// rounded. A scanned row went from 140 ns to 10, a fetched one from 310 to
+// 58: the ratio between them, which decides when an index wins, from about 2
+// to about 6.
 namespace cost {
-inline constexpr double kSeqRow = 140;    // a row of a scan: the next key, its heap page, decoded
-inline constexpr double kRandomRow = 310; // a row fetched by RID in another order, its page in the pool
-inline constexpr double kMissRow = 930;   // ... and more, when that page has to come from the file
-inline constexpr double kSeek = 250;      // one search of an index, root to leaf
-inline constexpr double kBuildRow = 140;  // a row filed in a join's hash table
-inline constexpr double kProbeRow = 25;   // a row looked up in it
-inline constexpr double kPairRow = 5;     // a pair of rows a nested loop compares
+inline constexpr double kSeqRow = 10;     // a row of a scan: the next key, its heap page, decoded
+inline constexpr double kRandomRow = 58;  // a row fetched by RID in another order, its page in the pool
+inline constexpr double kMissRow = 900;   // ... and more, when that page has to come from the file
+inline constexpr double kSeek = 280;      // one search of an index, root to leaf
+inline constexpr double kBuildRow = 27;   // a row filed in a join's hash table
+inline constexpr double kProbeRow = 18;   // a row looked up in it
+inline constexpr double kPairRow = 4.5;   // a pair of rows a nested loop compares
 inline constexpr double kDistinct = 200;  // distinct values assumed in a column nothing has counted
+// Unit 12: the rows at which batches start to pay. A plan run in batches costs
+// about a microsecond more to start than the same plan a row at a time, and
+// saves on every row; a plan none of whose operators is expected to handle
+// this many rows runs a row at a time (Challenge 12.6).
+inline constexpr double kBatchFrom = 256;
 }  // namespace cost
 
 // The result of a SELECT: the column names, and the rows. CREATE and INSERT
@@ -106,6 +115,19 @@ class Executor {
   // side, in one session, over the same data.
   void set_literal_planning(bool on) { literal_ = on; }
 
+  // Unit 12: how a plan runs. By default (kChoose) the executor decides, plan
+  // by plan: in batches of kDefaultBatchRows rows, column by column, when some
+  // operator of the plan is expected to handle cost::kBatchFrom rows or more;
+  // a row at a time when none is. set_batch_rows(n) decides instead, for every
+  // plan: in batches of up to n rows, or, with 0, a row at a time, as Units 9
+  // to 11 ran every plan -- kept so that the ways can be measured side by
+  // side. The plan is the same either way, and so is its answer.
+  static constexpr std::size_t kChoose = ~std::size_t{0};
+  void set_batch_rows(std::size_t n) { batch_rows_ = n; }
+  std::size_t batch_rows() const { return batch_rows_; }
+  // How the last SELECT ran: in batches of this many rows, or 0, a row at a time.
+  std::size_t last_batch_rows() const { return last_batch_rows_; }
+
   // A SELECT's plan: the operator tree, and the column names of its result.
   struct Plan {
     OpPtr root;
@@ -124,6 +146,8 @@ class Executor {
   JoinAlgorithm join_algorithm_ = JoinAlgorithm::kAuto;
   AccessPath access_path_ = AccessPath::kAuto;
   bool literal_ = false;
+  std::size_t batch_rows_ = kChoose;
+  std::size_t last_batch_rows_ = 0;
   OpPtr last_plan_;
 
   ResultSet run_create(const CreateTableStmt& s);

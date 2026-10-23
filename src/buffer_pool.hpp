@@ -116,4 +116,41 @@ class BufferPool {
   std::uint64_t evictions_ = 0;
 };
 
+// Unit 12: one page pinned in the pool, read where it lies, and unpinned when
+// the pin is released, replaced, or destroyed. read_page() copies all 4 KiB of
+// a frame out to the caller; a reader that holds a PagePin reads the frame
+// itself, and the pool may not evict it meanwhile. Move-only, like the pin it
+// owns. Readers only: a pin taken this way never marks its page dirty.
+class PagePin {
+ public:
+  PagePin() = default;
+  PagePin(BufferPool& pool, PageId id) : pool_(&pool), id_(id), page_(&pool.fetch_pin(id)) {}
+  PagePin(PagePin&& o) noexcept : pool_(o.pool_), id_(o.id_), page_(o.page_) { o.page_ = nullptr; }
+  PagePin& operator=(PagePin&& o) noexcept {
+    if (this != &o) {
+      release();
+      pool_ = o.pool_;
+      id_ = o.id_;
+      page_ = o.page_;
+      o.page_ = nullptr;
+    }
+    return *this;
+  }
+  PagePin(const PagePin&) = delete;
+  PagePin& operator=(const PagePin&) = delete;
+  ~PagePin() { release(); }
+
+  void release() {
+    if (page_) pool_->unpin(id_, /*dirty=*/false);
+    page_ = nullptr;
+  }
+  bool holds(PageId id) const { return page_ != nullptr && id_ == id; }
+  const Page& page() const { return *page_; }
+
+ private:
+  BufferPool* pool_ = nullptr;
+  PageId id_ = kNullPage;
+  Page* page_ = nullptr;
+};
+
 }  // namespace labdb

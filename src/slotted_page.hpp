@@ -164,4 +164,16 @@ class SlottedPage {
   Page* p_;
 };
 
+// Unit 12: read() for a page the caller may only look at -- a frame pinned in
+// the buffer pool, read where it lies. The same answer as SlottedPage::read:
+// nothing for a slot that is not live, else a span into the page.
+inline std::optional<std::span<const std::uint8_t>> read_record(const Page& p,
+                                                                std::uint16_t slot) {
+  if (slot >= p.slot_count()) return std::nullopt;
+  const std::size_t pos = kPageHeaderSize + kSlotSize * static_cast<std::size_t>(slot);
+  const std::uint16_t off = load_u16(p.data() + pos);
+  if (off == 0) return std::nullopt;
+  return std::span<const std::uint8_t>(p.data() + off, load_u16(p.data() + pos + 2));
+}
+
 }  // namespace labdb

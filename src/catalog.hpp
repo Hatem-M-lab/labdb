@@ -38,6 +38,7 @@
 #include <string>
 #include <vector>
 
+#include "batch.hpp"
 #include "btree.hpp"
 #include "buffer_pool.hpp"
 #include "common.hpp"
@@ -52,19 +53,38 @@ namespace labdb {
 // one-table SELECT needed. An operator pipeline must instead *pull* one row,
 // hand it upward, and resume later; so the scan's state -- the tree cursor and
 // the open heap -- lives in this object between calls.
+//
+// Unit 12: a row is read where it lies. Through Unit 11 each row copied its
+// whole 4 KiB page out of the buffer pool (Heap::get), then its record out of
+// that copy, then decoded both into a newly allocated Row. Now the cursor pins
+// the row's page and decodes the record straight out of the frame into the
+// caller's Row, reusing its storage -- and keeps the page pinned while the
+// rows that follow come from it too, which, for a table filled in key order, is
+// about 140 rows a page. `copy` keeps Unit 11's way, for comparison
+// (Catalog::set_copy_pages).
 class TableCursor {
  public:
   // Decode the next row into `out`. False once the table is exhausted.
   bool next(Row& out);
+  // Unit 12: decode up to `max` rows into positions 0, 1, ... of `out`, a batch
+  // formatted for this table's columns with room for them; returns how many.
+  // 0 once the table is exhausted.
+  std::size_t fill(Batch& out, std::size_t max);
   const Schema& schema() const { return schema_; }
 
  private:
   friend class Catalog;
-  TableCursor(BufferPool& pool, Schema schema, PageId heap_head, PageId root);
+  TableCursor(BufferPool& pool, Schema schema, PageId heap_head, PageId root, bool copy);
 
   Schema schema_;
+  RecordLayout layout_;
+  BufferPool* pool_;
   Heap heap_;
   Cursor cur_;
+  bool copy_;
+  PagePin pin_;  // the page the last row came from
+  std::vector<const std::uint8_t*> recs_;  // fill(): one page's run of records ...
+  std::vector<std::size_t> sizes_;         // ... and their sizes
 };
 
 // Unit 11: the key a table's own index files a row under -- the order_key of
@@ -79,6 +99,8 @@ struct TableInfo {
   std::uint64_t rows = 0;        // exact: counted by every insert
   std::uint32_t heap_pages = 0;  // pages in the table's heap
   std::vector<bool> indexed;     // per column: column 0 always (the key); others by CREATE INDEX
+  PageId heap_head = kNullPage;  // Unit 12: where the table's heap and tree begin,
+  PageId btree_root = kNullPage; // for the programs that take a row apart (u12_anatomy_bench)
 };
 
 // Unit 11: a pull-based walk through one index, the twin of TableCursor: the
@@ -91,7 +113,11 @@ class IndexCursor {
   // Position before the first entry with key >= lo; next() stops after hi.
   void seek(Key lo, Key hi);
   // Decode the row of the next entry in range into `out`; false past hi.
+  // Unit 12: the row's page is pinned and read in place, as TableCursor does.
   bool next(Row& out);
+  // Unit 12: up to `max` rows of the entries in range into positions at,
+  // at + 1, ... of `out`, formatted for the table's columns; returns how many.
+  std::size_t fill(Batch& out, std::size_t at, std::size_t max);
   Key key() const { return key_; }  // the key of the entry next() last returned
   // The largest key in the index, if it holds any entry.
   std::optional<Key> max_key() const;
@@ -100,10 +126,17 @@ class IndexCursor {
  private:
   friend class Catalog;
   IndexCursor(BufferPool& pool, Schema schema, PageId heap_head, PageId root,
-              bool unique, ChildRule rule);
+              bool unique, ChildRule rule, bool copy);
+  void fetch(RID rid, Row& out);  // the row at rid, into out
 
   Schema schema_;
+  RecordLayout layout_;
+  BufferPool* pool_;
   Heap heap_;
+  bool copy_;
+  PagePin pin_;  // the page the last row came from
+  std::vector<const std::uint8_t*> recs_;  // fill(): a run of records on pin_'s page ...
+  std::vector<std::size_t> sizes_;         // ... and their sizes
   BTree tree_;
   ChildRule rule_;
   std::optional<Cursor> cur_;
@@ -190,6 +223,13 @@ class Catalog {
   // a page it asks for is already in memory.
   std::size_t pool_frames() const { return pool_.capacity(); }
 
+  // Unit 12: read rows as Unit 11 did -- every row copies its page out of the
+  // pool, then its record, and decodes a newly allocated Row -- so that the old
+  // way and the new can be measured side by side, in one build. Applies to the
+  // cursors opened, and the lookups made, after the call.
+  void set_copy_pages(bool on) { copy_pages_ = on; }
+  bool copy_pages() const { return copy_pages_; }
+
   // Insert a row into a named table. Column 0 is that table's key (a
   // limitation stated plainly: no separate PRIMARY KEY declaration yet).
   // Since Unit 11 the row is also filed in every index of the table, and the
@@ -257,6 +297,7 @@ class Catalog {
 
   BufferPool& pool_;
   PageId cat_page_;
+  bool copy_pages_ = false;
 };
 
 }  // namespace labdb

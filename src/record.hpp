@@ -127,18 +127,23 @@ using Row = std::vector<Field>;
 // their first 8 bytes share a key, so a search through a TEXT key finds
 // candidates, and the comparison must be checked again on the row. Not for
 // NULL, which no index holds.
+inline std::uint64_t order_key_text(const std::string& t) {
+  std::uint64_t p = 0;
+  for (std::size_t i = 0; i < 8 && i < t.size(); ++i)
+    p |= std::uint64_t{static_cast<unsigned char>(t[i])} << (56 - 8 * i);
+  return p;
+}
+inline std::uint64_t order_key_double(double v) {
+  const std::uint64_t b = std::bit_cast<std::uint64_t>(v == 0 ? 0.0 : v);
+  return (b >> 63) ? ~b : b | (1ULL << 63);
+}
+inline std::uint64_t order_key_int(std::int64_t v) {  // INT64, INT32, BOOL
+  return static_cast<std::uint64_t>(v) ^ (1ULL << 63);
+}
 inline std::uint64_t order_key(const Field& f) {
-  if (f.type == ColType::kText) {
-    std::uint64_t p = 0;
-    for (std::size_t i = 0; i < 8 && i < f.text.size(); ++i)
-      p |= std::uint64_t{static_cast<unsigned char>(f.text[i])} << (56 - 8 * i);
-    return p;
-  }
-  if (f.type == ColType::kDouble) {
-    const std::uint64_t b = std::bit_cast<std::uint64_t>(f.f64 == 0 ? 0.0 : f.f64);
-    return (b >> 63) ? ~b : b | (1ULL << 63);
-  }
-  return static_cast<std::uint64_t>(f.i64) ^ (1ULL << 63);  // INT64, INT32, BOOL
+  if (f.type == ColType::kText) return order_key_text(f.text);
+  if (f.type == ColType::kDouble) return order_key_double(f.f64);
+  return order_key_int(f.i64);
 }
 
 // Whether order_key is exact for this type: everything but TEXT.
@@ -239,6 +244,72 @@ inline Row decode(const Schema& s, std::span<const std::uint8_t> rec) {
     row.push_back(detail::read_at(s, rec, i, s.slot_offset(i)));
   }
   return row;
+}
+
+// ---- decode_into: the same, into a row that already exists (Unit 12) ----
+// decode() builds a new Row: a vector allocated for its fields, a string for
+// each text. A scan that hands out one row after another into the same Row
+// need not pay that again: this overwrites the row's fields in place, so the
+// vector keeps its allocation and each text field's string keeps its buffer.
+// And decode() works out each column's offset, for every row, from the schema;
+// a RecordLayout works them out once. The values are exactly decode()'s, NULLs
+// included (a NULL field's value is zeroed, its text emptied).
+
+// Where each of a schema's columns lies in its records.
+struct RecordLayout {
+  std::vector<ColType> types;
+  std::vector<std::uint32_t> slot;  // byte offset of each column's fixed slot
+  std::size_t nulls = 0;            // bytes of null bitmap
+  std::size_t var_start = 0;        // where the variable part begins
+
+  RecordLayout() = default;
+  explicit RecordLayout(const Schema& s)
+      : nulls(s.null_bitmap_bytes()), var_start(s.null_bitmap_bytes() + s.fixed_part_bytes()) {
+    std::size_t off = nulls;
+    for (const Column& c : s.columns) {
+      types.push_back(c.type);
+      slot.push_back(static_cast<std::uint32_t>(off));
+      off += slot_width(c.type);
+    }
+  }
+};
+
+inline void decode_into(const RecordLayout& l, std::span<const std::uint8_t> rec, Row& row) {
+  check_that(rec.size() >= l.var_start, "record shorter than its fixed part");
+  const std::size_t nc = l.types.size();
+  if (row.size() != nc) row.resize(nc);
+  const std::uint8_t* p = rec.data();
+  for (std::size_t i = 0; i < nc; ++i) {
+    Field& v = row[i];
+    const ColType t = l.types[i];
+    v.type = t;
+    v.is_null = (p[i / 8] >> (i % 8)) & 1u;
+    const std::uint8_t* at = p + l.slot[i];
+    if (v.is_null) {
+      v.i64 = 0;
+      v.text.clear();
+      continue;
+    }
+    switch (t) {
+      case ColType::kInt64: v.i64 = static_cast<std::int64_t>(load_u64(at)); break;
+      case ColType::kInt32: v.i64 = static_cast<std::int32_t>(load_u32(at)); break;
+      case ColType::kBool: v.i64 = *at ? 1 : 0; break;
+      case ColType::kDouble: v.f64 = std::bit_cast<double>(load_u64(at)); break;
+      case ColType::kText: {
+        const std::size_t vstart = l.var_start + load_u16(at);
+        const std::size_t vlen = load_u16(at + 2);
+        check_that(vstart + vlen <= rec.size(), "text pointer runs off the record");
+        v.text.assign(reinterpret_cast<const char*>(p) + vstart, vlen);
+        continue;
+      }
+    }
+    if (!v.text.empty()) v.text.clear();
+  }
+}
+
+// The same, given only the schema (the layout worked out on the spot).
+inline void decode_into(const Schema& s, std::span<const std::uint8_t> rec, Row& row) {
+  decode_into(RecordLayout(s), rec, row);
 }
 
 // ---- RID: a record's address, (page, slot), packed into the B+Tree's u64 ----

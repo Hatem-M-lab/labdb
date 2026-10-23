@@ -60,20 +60,23 @@ class JoinHashTable {
     hashes_.push_back(key_hash);
     rows_.push_back(std::move(row));
   }
+  // Unit 12: file only the hash -- for a build side whose rows are kept
+  // elsewhere, as columns, where row id i is the i-th hash filed.
+  void add_key(std::uint64_t key_hash) { hashes_.push_back(key_hash); }
 
   // End of the build: choose the bucket count (the smallest power of two
   // that is at least the row count, so the load factor is at most 1) and
   // group the row ids by bucket. Probes may begin after this.
   void finish() {
     std::size_t nb = 1;
-    while (nb < rows_.size()) nb <<= 1;
+    while (nb < hashes_.size()) nb <<= 1;
     mask_ = nb - 1;
     offset_.assign(nb + 1, 0);
     for (std::uint64_t h : hashes_) ++offset_[bucket_of(h) + 1];
     for (std::size_t b = 0; b < nb; ++b) offset_[b + 1] += offset_[b];
-    order_.resize(rows_.size());
+    order_.resize(hashes_.size());
     std::vector<std::uint32_t> fill(offset_.begin(), offset_.end() - 1);
-    for (std::uint32_t id = 0; id < rows_.size(); ++id)
+    for (std::uint32_t id = 0; id < hashes_.size(); ++id)
       order_[fill[bucket_of(hashes_[id])]++] = id;
   }
 
@@ -85,7 +88,7 @@ class JoinHashTable {
   std::uint32_t id_at(std::uint32_t pos) const { return order_[pos]; }
   std::uint64_t hash_of(std::uint32_t id) const { return hashes_[id]; }
   const Row& row(std::uint32_t id) const { return rows_[id]; }
-  std::size_t size() const { return rows_.size(); }
+  std::size_t size() const { return hashes_.size(); }
 
   // How the rows spread across buckets. `chain_hist[k]` counts the buckets
   // holding a number of rows in the k-th class: 0, 1, 2, 3-4, 5-8, 9-16, ...
@@ -95,7 +98,7 @@ class JoinHashTable {
   };
   Occupancy occupancy() const {
     Occupancy o;
-    o.rows = rows_.size();
+    o.rows = hashes_.size();
     o.buckets = offset_.empty() ? 0 : offset_.size() - 1;
     for (std::size_t b = 0; b < o.buckets; ++b) {
       const std::size_t len = offset_[b + 1] - offset_[b];

@@ -865,13 +865,36 @@ Executor::Plan Executor::plan(const SelectStmt& s) {
 
 // --------------------------------------------------------------- running
 
+// The most rows any operator of a plan is expected to handle: the largest of
+// the planner's estimates in the tree (0 if it made none, as for MIN and MAX
+// read from the ends of indexes).
+static double most_rows(const Operator& op) {
+  double most = op.estimate().value_or(0);
+  for (const Operator* c : op.children()) most = std::max(most, most_rows(*c));
+  return most;
+}
+
 ResultSet Executor::run_select(const SelectStmt& s) {
   Plan p = plan(s);
   ResultSet out;
   out.columns = std::move(p.column_names);
+  const std::size_t batch = batch_rows_ != kChoose            ? batch_rows_
+                            : most_rows(*p.root) >= cost::kBatchFrom ? kDefaultBatchRows
+                                                                     : 0;
+  last_batch_rows_ = batch;
+  p.root->set_batch_rows(batch);
   p.root->open();
-  Row row;
-  while (p.root->next(row)) out.rows.push_back(std::move(row));
+  if (batch == 0) {  // a row at a time (Units 9-11)
+    Row row;
+    while (p.root->next(row)) out.rows.push_back(std::move(row));
+  } else {                 // in batches (Unit 12): each live row becomes a result row
+    Batch b;
+    while (p.root->next_batch(b))
+      for (std::size_t k = 0; k < b.count(); ++k) {
+        out.rows.emplace_back();
+        b.get_row(b.row(k), out.rows.back());
+      }
+  }
   p.root->close();
   last_plan_ = std::move(p.root);
   return out;

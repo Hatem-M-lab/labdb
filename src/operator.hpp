@@ -18,15 +18,32 @@
 // scans, a Project over the join. This is the iterator, or "Volcano", model
 // (Graefe, 1994), and most row-at-a-time engines are built this way. Its
 // price is a virtual call per row per operator, measured in Challenge 9.1.
+//
+// Unit 12 gives every operator a second way to run, beside the first:
+//
+//     next_batch(b)   put up to a thousand rows in b, column by column
+//                     (batch.hpp); return false when there are no more
+//
+// A plan runs one way or the other, all of it (set_batch_rows). The row
+// path is Unit 9's, unchanged, and kept so the two can be measured side by
+// side; the batch path is what the executor runs. An operator with no batch
+// path of its own (an index lookup, a nested loop) gets one for free: the
+// base class fills batches from its rows, and reads its inputs' batches back
+// into rows for it. A batch handed out always holds at least one live row --
+// an empty batch is never a result, and Challenge 12.5 is what happens when
+// one is taken for the end.
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "ast.hpp"
+#include "batch.hpp"
 #include "catalog.hpp"
 #include "join_hash.hpp"
 #include "record.hpp"
@@ -89,7 +106,15 @@ bool eval(const BoundComparison& c, const Row& row);
 bool eval_pair(const BoundComparison& c, const Row& l, const Row& r,
                std::size_t nleft);
 
+// Unit 12: eval() for a whole batch. Of the batch's live rows, keep those for
+// which `c` holds, and mark the batch selected. The comparison is typed once
+// for the batch -- integers, doubles or text; a column or a literal on the
+// right -- and then run as one loop over the rows, with the same NULL rule.
+void select(const BoundComparison& c, Batch& b);
+
 // --------------------------------------------------------------- Operator
+class BatchReader;
+
 class Operator {
  public:
   virtual ~Operator() = default;
@@ -103,7 +128,23 @@ class Operator {
     ++rows_out_;
     return true;
   }
+  // Unit 12: put the next rows in `out` -- at least one live row, at most
+  // `max` -- and return true; or return false when there are no more. Counts
+  // them, as next() counts its row: one virtual call per batch.
+  bool next_batch(Batch& out, std::size_t max = SIZE_MAX) {
+    if (!produce_batch(out, max)) return false;
+    check_that(out.count() > 0 && out.count() <= max,
+               "a batch handed out must hold at least one row, and no more than asked for");
+    rows_out_ += out.count();
+    return true;
+  }
   virtual void close() = 0;
+
+  // Unit 12: run this operator, and every operator below it, in batches of up
+  // to `n` rows; 0 runs them a row at a time, as Units 9 to 11 did. Set before
+  // open(). An operator built and drained directly runs a row at a time.
+  void set_batch_rows(std::size_t n);
+  std::size_t batch_rows() const { return batch_rows_; }
 
   const OutSchema& schema() const { return schema_; }
   std::uint64_t rows_out() const { return rows_out_; }
@@ -112,7 +153,10 @@ class Operator {
   // a second line of what it measured while running (a join's table sizes).
   virtual std::string describe() const = 0;
   virtual std::string detail() const { return {}; }
-  virtual std::vector<const Operator*> children() const { return {}; }
+  // The operators this one reads from, in order (Unit 12: kept by the base
+  // class, which sets a whole plan's batch size through them; a view of them,
+  // so that walking a plan allocates nothing).
+  std::span<Operator* const> children() const { return inputs_; }
 
   // Unit 11: how many rows the planner expected this operator to produce, when
   // it estimated -- printed beside rows_out() by plan_text(op, true).
@@ -121,12 +165,55 @@ class Operator {
 
  protected:
   virtual bool produce(Row& out) = 0;
+  // Unit 12: the batch path. The default is the adapter that lets an operator
+  // with only a row path run inside a batch plan: rows from produce(), packed
+  // into a batch. Operators with a batch path of their own override it.
+  virtual bool produce_batch(Batch& out, std::size_t max);
+  // Unit 12: one row from input `in`, the way this plan runs -- from in.next(),
+  // or, in a batch plan, out of in's batches through `reader`. What the
+  // operators that still work a row at a time read their inputs with.
+  bool pull(Operator& in, BatchReader& reader, Row& out);
+  // Unit 12: the rows this call may produce -- at most `max`, and at most the
+  // batch size -- and the column types of schema_, what a batch of this
+  // operator's rows is formatted with. A batch is formatted for the rows about
+  // to be written, when that is known, and grows as it is filled when it is
+  // not (Batch::ensure): its columns are as long as the rows it holds.
+  std::size_t cap(std::size_t max) const { return max < batch_rows_ ? max : batch_rows_; }
+  const std::vector<ColType>& types() const { return types_; }
 
   OutSchema schema_;
+  std::vector<Operator*> inputs_;  // set by each constructor; owned by the subclass
   std::uint64_t rows_out_ = 0;
   std::optional<double> estimate_;
+  std::size_t batch_rows_ = 0;
+  std::vector<ColType> types_;  // schema_'s column types, set with the batch size
+  Row pack_;                    // the default produce_batch's row
 };
 using OpPtr = std::unique_ptr<Operator>;
+
+// Unit 12: rows read out of an input's batches, one at a time -- the other
+// half of the adapter, for an operator with only a row path that reads an
+// input running in batches.
+class BatchReader {
+ public:
+  bool next(Operator& in, Row& out) {
+    while (k_ >= batch_.count()) {
+      if (!in.next_batch(batch_)) return false;
+      k_ = 0;
+    }
+    batch_.get_row(batch_.row(k_++), out);
+    return true;
+  }
+  void reset() {
+    batch_.size = 0;
+    batch_.selected = false;
+    k_ = 0;
+  }
+
+ private:
+  Batch batch_;
+  std::size_t k_ = 0;
+};
 
 // The operator tree, one operator per line, children indented under their
 // parent, each with the number of rows it produced -- and, with `estimates`
@@ -147,6 +234,7 @@ class SeqScan : public Operator {
 
  protected:
   bool produce(Row& out) override;
+  bool produce_batch(Batch& out, std::size_t max) override;  // decoded from pinned pages
 
  private:
   Catalog& cat_;
@@ -192,6 +280,7 @@ class IndexScan : public Operator {
 
  protected:
   bool produce(Row& out) override { return cur_ && cur_->next(out); }
+  bool produce_batch(Batch& out, std::size_t max) override;
 
  private:
   Catalog& cat_;
@@ -220,6 +309,26 @@ class RowsScan : public Operator {
   std::size_t i_ = 0;
 };
 
+// Unit 12: RowsScan's twin for batches -- `rows` rows in memory, held as
+// columns, the layout a batch has. A batch plan over it measures the
+// operators with no storage under them, as RowsScan does for the row path.
+class ColumnsScan : public Operator {
+ public:
+  ColumnsScan(OutSchema schema, const std::vector<ColumnVector>& cols, std::size_t rows);
+  void open() override { i_ = 0; }
+  void close() override {}
+  std::string describe() const override;
+
+ protected:
+  bool produce(Row& out) override;
+  bool produce_batch(Batch& out, std::size_t max) override;
+
+ private:
+  const std::vector<ColumnVector>& cols_;
+  std::size_t rows_;
+  std::size_t i_ = 0;
+};
+
 // --------------------------------------------------------------- one input
 
 // The input rows that satisfy every comparison (they are AND-ed).
@@ -229,10 +338,10 @@ class Filter : public Operator {
   void open() override { child_->open(); }
   void close() override { child_->close(); }
   std::string describe() const override { return "Filter " + text_; }
-  std::vector<const Operator*> children() const override { return {child_.get()}; }
 
  protected:
   bool produce(Row& out) override;
+  bool produce_batch(Batch& out, std::size_t max) override;  // select() per term
 
  private:
   OpPtr child_;
@@ -247,16 +356,17 @@ class Project : public Operator {
   void open() override { child_->open(); }
   void close() override { child_->close(); }
   std::string describe() const override { return "Project " + text_; }
-  std::vector<const Operator*> children() const override { return {child_.get()}; }
 
  protected:
   bool produce(Row& out) override;
+  bool produce_batch(Batch& out, std::size_t max) override;  // columns moved, not copied
 
  private:
   OpPtr child_;
   std::vector<std::size_t> cols_;
   std::string text_;
   Row in_;
+  Batch in_batch_;
 };
 
 // -------------------------------------------------------------- two inputs
@@ -273,9 +383,6 @@ class NestedLoopJoin : public Operator {
   void close() override;
   std::string describe() const override;
   std::string detail() const override;
-  std::vector<const Operator*> children() const override {
-    return {left_.get(), right_.get()};
-  }
 
  protected:
   bool produce(Row& out) override;
@@ -289,6 +396,7 @@ class NestedLoopJoin : public Operator {
   Row outer_;
   bool have_outer_ = false;
   std::size_t j_ = 0;
+  BatchReader lread_, rread_;  // Unit 12: its inputs' batches, read back as rows
 };
 
 // Equality join through a hash table. open() reads the right input (the
@@ -309,18 +417,20 @@ class HashJoin : public Operator {
   void close() override;
   std::string describe() const override;
   std::string detail() const override;
-  std::vector<const Operator*> children() const override {
-    return {left_.get(), right_.get()};
-  }
   const JoinHashTable& table() const { return table_; }
 
  protected:
   bool produce(Row& out) override;
+  // Unit 12: the build side filed as columns; each probe batch hashed in one
+  // pass, its matches collected as pairs of positions, the output gathered.
+  bool produce_batch(Batch& out, std::size_t max) override;
 
  private:
   std::uint64_t key_hash(const Row& row, const std::vector<std::size_t>& cols) const;
   bool null_key(const Row& row, const std::vector<std::size_t>& cols) const;
   bool keys_equal(const Row& l, const Row& r) const;
+  void build_batches();
+  std::uint64_t batch_key_hash(const Batch& b, std::size_t i, const std::vector<std::size_t>& cols) const;
 
   OpPtr left_, right_;
   std::vector<std::size_t> lkeys_, rkeys_;
@@ -335,6 +445,15 @@ class HashJoin : public Operator {
   bool probing_ = false;
   std::uint64_t probe_hash_ = 0;
   std::uint32_t pos_ = 0, end_ = 0;
+  // Unit 12, the batch path: the build side's rows as columns (their hashes
+  // and buckets in table_), the probe batch being worked through, and the
+  // pairs of positions -- probe row, build row -- that matched.
+  std::vector<ColumnVector> built_;
+  Batch probe_batch_;
+  std::vector<std::uint64_t> probe_hashes_;
+  std::size_t pk_ = 0;  // the probe batch's live row being matched
+  bool in_bucket_ = false;
+  std::vector<std::uint32_t> match_probe_, match_build_;
 };
 
 // Unit 11: for each row of the outer input, the rows of a table whose indexed
@@ -356,10 +475,13 @@ class IndexNestedLoopJoin : public Operator {
   void close() override;
   std::string describe() const override;
   std::string detail() const override;
-  std::vector<const Operator*> children() const override { return {outer_.get()}; }
 
  protected:
   bool produce(Row& out) override;
+  // Unit 12: for each outer row of a batch, the index searched and its matches
+  // decoded straight into a batch of the inner table's rows; then the output
+  // gathered, outer columns and inner, as the hash join gathers its own.
+  bool produce_batch(Batch& out, std::size_t max) override;
 
  private:
   OpPtr outer_;
@@ -376,6 +498,11 @@ class IndexNestedLoopJoin : public Operator {
   Row outer_row_, inner_row_;
   bool have_outer_ = false;
   std::uint64_t searches_ = 0, fetched_ = 0;
+  BatchReader read_;  // Unit 12: the outer input's batches, read back as rows
+  std::vector<ColType> inner_types_;
+  Batch outer_batch_, inner_batch_;  // the batch path's outer rows, and its fetched inner rows
+  std::size_t ok_ = 0;               // the outer batch's live row being searched for
+  std::vector<std::uint32_t> match_outer_, oidx_, iidx_;
 };
 
 // ------------------------------------------------------ aggregation (Unit 10)
@@ -457,19 +584,26 @@ class HashAggregate : public Operator {
   void close() override {}  // the input was read to its end, and closed, in open()
   std::string describe() const override { return "HashAggregate " + text_; }
   std::string detail() const override;
-  std::vector<const Operator*> children() const override { return {child_.get()}; }
-  std::size_t groups() const { return keys_.size(); }
+  std::size_t groups() const { return batch_rows_ ? ngroups_ : keys_.size(); }
   std::size_t slots() const { return slots_.size(); }
   std::size_t bytes() const;  // what the table holds, by sizeof (the allocator's overhead aside)
 
  protected:
   bool produce(Row& out) override;
+  // Unit 12: each input batch's rows given their groups in one pass, then
+  // each aggregate folded over the batch in a loop of its own, into states
+  // kept as one array per aggregate.
+  bool produce_batch(Batch& out, std::size_t max) override;
 
  private:
   std::uint64_t key_hash(const Row& row) const;
   bool same_key(const Row& row, std::uint32_t g) const;
   std::uint32_t find_or_add(const Row& row);
   void grow();
+  void open_batches();
+  std::uint32_t find_or_add(const Batch& b, std::size_t i, std::uint64_t h);
+  bool same_key(const Batch& b, std::size_t i, std::uint32_t g) const;
+  void fold(const AggSpec& a, std::size_t ai, const Batch& b);
 
   OpPtr child_;
   std::vector<std::size_t> group_cols_;
@@ -485,6 +619,17 @@ class HashAggregate : public Operator {
   std::size_t mask_ = 0;
   std::size_t longest_probe_ = 0;
   std::size_t next_ = 0;  // the next group to hand out
+  // Unit 12, the batch path. Group g's key is row g of gkeys_ (one column per
+  // GROUP BY column) and its hash hashes_[g]; aggregate a's state for group g
+  // is counts_[a][g], with sums_[a][g] for SUM and AVG and row g of best_[a]
+  // for MIN and MAX -- only what each aggregate needs, 8 to 16 bytes a group.
+  std::size_t ngroups_ = 0;
+  std::vector<ColumnVector> gkeys_;
+  std::vector<std::vector<std::int64_t>> counts_, sums_;
+  std::vector<ColumnVector> best_;
+  std::vector<std::uint32_t> gids_;  // the group of each live row of the batch being folded
+  std::vector<std::uint64_t> batch_hashes_;  // ... and its key's hash
+  bool int_key_ = false;  // one GROUP BY column, an integer one: keys compared in one step
 };
 
 // ------------------------------------------------- ORDER BY and LIMIT (Unit 10)
@@ -515,10 +660,10 @@ class Sort : public Operator {
   void close() override {}  // the input was read to its end, and closed, in open()
   std::string describe() const override;
   std::string detail() const override;
-  std::vector<const Operator*> children() const override { return {child_.get()}; }
 
  protected:
   bool produce(Row& out) override;
+  bool produce_batch(Batch& out, std::size_t max) override;
 
  private:
   struct Entry {
@@ -530,6 +675,13 @@ class Sort : public Operator {
   bool entry_before(const Entry& a, const Entry& b) const {
     return a.prefix != b.prefix ? a.prefix < b.prefix : before(a.row, b.row);
   }
+  // Unit 12, the batch path: the rows held as columns (cols_), compared there.
+  std::uint64_t prefix_of(const std::vector<ColumnVector>& c, std::size_t i) const;
+  bool before_cols(std::uint32_t a, std::uint32_t b) const;
+  bool entry_before_cols(const Entry& a, const Entry& b) const {
+    return a.prefix != b.prefix ? a.prefix < b.prefix : before_cols(a.row, b.row);
+  }
+  void open_batches();
 
   OpPtr child_;
   std::vector<SortKey> keys_;
@@ -543,6 +695,8 @@ class Sort : public Operator {
   std::uint64_t read_ = 0;
   std::size_t held_ = 0;
   std::uint64_t replaced_ = 0;  // top n: rows that displaced a held row
+  std::vector<ColumnVector> cols_;  // Unit 12: the rows held, one column per input column
+  std::vector<std::uint32_t> seq_index_;  // the rows a batch of output is gathered from
 };
 
 // LIMIT n: pass on at most n rows, then stop asking for more. A scan below it
@@ -556,12 +710,21 @@ class Limit : public Operator {
   }
   void close() override { child_->close(); }
   std::string describe() const override { return "Limit " + std::to_string(n_); }
-  std::vector<const Operator*> children() const override { return {child_.get()}; }
 
  protected:
   bool produce(Row& out) override {
     if (given_ >= n_ || !child_->next(out)) return false;
     ++given_;
+    return true;
+  }
+  // Asks its input for no more rows than it still needs -- and next_batch()
+  // guarantees no batch holds more than asked for -- so a scan below a LIMIT n
+  // reads n rows in a batch plan too.
+  bool produce_batch(Batch& out, std::size_t max) override {
+    if (given_ >= n_) return false;
+    const std::uint64_t want = std::min<std::uint64_t>(max, n_ - given_);
+    if (!child_->next_batch(out, static_cast<std::size_t>(want))) return false;
+    given_ += out.count();
     return true;
   }
 

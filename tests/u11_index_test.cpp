@@ -558,9 +558,16 @@ int main() {
     has(plan_of("SELECT a FROM t WHERE id >= 300 AND id < 330"), "IndexScan t (id): id >= 300 AND id < 330");
     has(plan_of("SELECT a FROM t WHERE id > 10 AND id < 5"), "rows=0");
     has(plan_of("SELECT id FROM t WHERE b = 123456"), "IndexScan t (b): b = 123456");
+    // A TEXT key is a prefix: through the index, the term is checked again
+    // above it. (Unit 12: the index is forced here. Its 8-byte prefix,
+    // 'name_123', is shared by five of the words, and with Unit 12's cheaper
+    // scan the planner rightly reads the table instead.)
+    e.set_access_path(Executor::AccessPath::kIndex);
     const std::string text = plan_of("SELECT id FROM t WHERE s = 'name_123'");
-    has(text, "Filter s = 'name_123'");  // a TEXT key is a prefix: checked again
+    e.set_access_path(Executor::AccessPath::kAuto);
+    has(text, "Filter s = 'name_123'");
     has(text, "IndexScan t (s): s = 'name_123'");
+    has(plan_of("SELECT id FROM t WHERE s = 'name_123'"), "SeqScan t");
     has(plan_of("SELECT id FROM t WHERE b >= 0"), "SeqScan t");  // every b: a scan is cheaper
     has(plan_of("SELECT id FROM t WHERE f = TRUE AND a = 7"), "IndexScan t (a): a = 7");
     has(plan_of("SELECT id FROM t ORDER BY id LIMIT 3"), "Limit 3");

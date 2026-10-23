@@ -6,7 +6,8 @@ INC      := -Isrc -Itests
 ENGINE   := src/io.cpp src/pager.cpp src/btree.cpp src/buffer_pool.cpp \
             src/heap.cpp src/catalog.cpp src/parser.cpp src/executor.cpp \
             src/operator.cpp
-HDRS     := $(wildcard src/*.hpp) tests/harness.hpp tests/show.hpp tests/shop.hpp
+HDRS     := $(wildcard src/*.hpp) tests/harness.hpp tests/show.hpp tests/shop.hpp tests/anatomy.hpp \
+            tests/interleave.hpp
 
 TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
          u01_churn_bench u01_pager_test u01_fsync_bench \
@@ -23,7 +24,9 @@ TESTS := u01_page_layout_test u01_header_bench u01_slotted_test \
          u09_join_test u09_pipeline_bench u09_join_bench u09_walk_bench \
          u10_aggregate_test u10_sort_bench u10_group_bench \
          u11_index_test u11_range_bench u11_index_bench u11_cost_bench \
-         u11_join_bench u11_session_bench
+         u11_join_bench u11_session_bench \
+         u12_batch_test u12_anatomy_bench u12_cost_bench u12_pipeline_bench \
+         u12_group_bench u12_session_bench
 
 BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u01_c12_smoke bin/u01_c14_smoke bin/u02_median_bug_demo \
@@ -32,7 +35,7 @@ BINS := $(addprefix bin/,$(TESTS)) bin/u01_torn_write_demo \
         bin/u07_escape_swallow_demo bin/u08_key_range_demo \
         bin/u09_hash_collapse_demo bin/u09_null_probe \
         bin/u10_null_as_zero_demo bin/u10_query_probe bin/u11_split_run_demo \
-        bin/u11_insert_probe
+        bin/u11_insert_probe bin/u12_row_probe bin/u12_empty_batch_demo
 
 all: $(BINS)
 
@@ -92,6 +95,16 @@ bin/u11_split_run_demo: tools/u11_split_run_demo.cpp $(ENGINE) $(HDRS) | bin
 bin/u11_insert_probe: tools/u11_insert_probe.cpp $(ENGINE) $(HDRS) | bin
 	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
 
+# The empty-batch demo runs real plans in batches over the shop, so it links
+# the engine.
+bin/u12_empty_batch_demo: tools/u12_empty_batch_demo.cpp $(ENGINE) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+
+# The row probe runs one step of a scanned row (tests/anatomy.hpp) for
+# scripts/u12_anatomy_counts.sh to count under valgrind.
+bin/u12_row_probe: tools/u12_row_probe.cpp $(ENGINE) $(HDRS) | bin
+	$(CXX) $(CXXFLAGS) $(INC) $< $(ENGINE) -o $@
+
 # The query probe uses only Parser, plan and run_sql, so it builds against any
 # unit's engine from Unit 9 on (scripts/u10_before_after.sh builds it twice).
 bin/u10_query_probe: tools/u10_query_probe.cpp $(ENGINE) $(HDRS) | bin
@@ -122,7 +135,8 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
       bin/u08_sql_test bin/u08_key_range_demo \
       bin/u09_join_test bin/u09_hash_collapse_demo \
       bin/u10_aggregate_test bin/u10_null_as_zero_demo \
-      bin/u11_index_test bin/u11_split_run_demo
+      bin/u11_index_test bin/u11_split_run_demo \
+      bin/u12_batch_test bin/u12_empty_batch_demo
 	./bin/u01_page_layout_test
 	./bin/u01_slotted_test
 	./bin/u01_pager_test
@@ -152,6 +166,8 @@ test: bin/u01_page_layout_test bin/u01_slotted_test bin/u01_pager_test \
 	./bin/u10_null_as_zero_demo
 	./bin/u11_index_test
 	./bin/u11_split_run_demo
+	./bin/u12_batch_test
+	./bin/u12_empty_batch_demo
 
 bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
        bin/u01_scan_bench bin/u02_search_bench bin/u02_insert_bench \
@@ -160,7 +176,9 @@ bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
        bin/u08_sql_bench bin/u09_pipeline_bench bin/u09_join_bench \
        bin/u09_walk_bench bin/u10_sort_bench bin/u10_group_bench \
        bin/u11_range_bench bin/u11_index_bench bin/u11_cost_bench \
-       bin/u11_join_bench bin/u11_session_bench
+       bin/u11_join_bench bin/u11_session_bench bin/u12_anatomy_bench \
+       bin/u12_cost_bench bin/u12_pipeline_bench bin/u12_group_bench \
+       bin/u12_session_bench
 	./bin/u01_header_bench
 	./bin/u01_churn_bench
 	./bin/u01_fsync_bench
@@ -184,6 +202,11 @@ bench: bin/u01_header_bench bin/u01_churn_bench bin/u01_fsync_bench \
 	./bin/u11_cost_bench
 	./bin/u11_join_bench
 	./bin/u11_session_bench
+	./bin/u12_anatomy_bench
+	./bin/u12_cost_bench
+	./bin/u12_pipeline_bench
+	./bin/u12_group_bench
+	./bin/u12_session_bench
 
 clean:
 	rm -rf bin *.db *.bin *.img

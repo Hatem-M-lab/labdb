@@ -2,6 +2,7 @@
 
 #include "btree.hpp"
 #include "heap.hpp"
+#include "slotted_page.hpp"
 
 namespace labdb {
 
@@ -132,6 +133,8 @@ std::optional<TableInfo> Catalog::find_table(const std::string& name) const {
   TableInfo info;
   info.rows = d.rows;
   info.heap_pages = d.heap_pages;
+  info.heap_head = d.heap_head;
+  info.btree_root = d.btree_root;
   for (std::size_t c = 0; c < d.schema.size(); ++c)
     info.indexed.push_back(c == 0 || d.index_roots[c] != kNullPage);
   info.schema = std::move(d.schema);
@@ -233,9 +236,14 @@ std::optional<Row> Catalog::get_by_key(const std::string& table, Key key) {
   if (!v) return std::nullopt;
   const RID rid = rid_decode(*v);
 
-  Heap heap(pool_, d.heap_head, nullptr);    // heap_head must be valid: a row exists
-  const auto bytes = heap.get(rid);
-  return decode(d.schema, bytes);
+  if (copy_pages_) {  // Unit 11's way: the page copied out, then the record
+    Heap heap(pool_, d.heap_head, nullptr);  // heap_head must be valid: a row exists
+    return decode(d.schema, heap.get(rid));
+  }
+  const PagePin pin(pool_, rid.page);  // Unit 12: read in place
+  const auto rec = read_record(pin.page(), rid.slot);
+  check_that(rec.has_value(), "get_by_key: no live record at this RID");
+  return decode(d.schema, *rec);
 }
 
 void Catalog::scan_table(const std::string& table,
@@ -255,16 +263,67 @@ void Catalog::scan_table(const std::string& table,
 }
 
 TableCursor::TableCursor(BufferPool& pool, Schema schema, PageId heap_head,
-                         PageId root)
+                         PageId root, bool copy)
     : schema_(std::move(schema)),
+      layout_(schema_),
+      pool_(&pool),
       heap_(pool, heap_head, nullptr),
-      cur_(BTree(pool, root, nullptr).seek(0)) {}
+      cur_(BTree(pool, root, nullptr).seek(0)),
+      copy_(copy) {}
 
 bool TableCursor::next(Row& out) {
   if (!cur_.valid()) return false;
-  out = decode(schema_, heap_.get(rid_decode(cur_.value())));
+  const RID rid = rid_decode(cur_.value());
+  if (copy_) {  // Unit 11: copy the page, then the record; decode a new Row
+    out = decode(schema_, heap_.get(rid));
+  } else {      // Unit 12: the page pinned, the record decoded where it lies
+    if (!pin_.holds(rid.page)) pin_ = PagePin(*pool_, rid.page);
+    const auto rec = read_record(pin_.page(), rid.slot);
+    check_that(rec.has_value(), "scan: no live record at this RID");
+    decode_into(layout_, *rec, out);
+  }
   cur_.next();
   return true;
+}
+
+// A batch is filled a page at a time: the run of entries whose rows lie on the
+// page the next row is on -- for a table filled in key order, all of the
+// page's rows -- is found in the pinned frame, then decoded column by column.
+std::size_t TableCursor::fill(Batch& out, std::size_t max) {
+  std::size_t n = 0;
+  if (copy_) {  // Unit 11's reads, a row at a time
+    for (std::size_t room = out.room(); n < max && cur_.valid(); cur_.next()) {
+      if (n == room) out.ensure(n + 1), room = out.room();
+      decode_to(layout_, heap_.get(rid_decode(cur_.value())), out, n++);
+    }
+    out.size = n;
+    return n;
+  }
+  while (n < max && cur_.valid()) {
+    const PageId page = rid_decode(cur_.value()).page;
+    if (!pin_.holds(page)) pin_ = PagePin(*pool_, page);
+    const Page& frame = pin_.page();
+    std::size_t run = 0;
+    do {
+      const RID rid = rid_decode(cur_.value());
+      if (rid.page != page) break;
+      const auto rec = read_record(frame, rid.slot);
+      check_that(rec.has_value(), "scan: no live record at this RID");
+      if (run == recs_.size()) {
+        recs_.resize(recs_.empty() ? 64 : 2 * recs_.size());
+        sizes_.resize(recs_.size());
+      }
+      recs_[run] = rec->data();
+      sizes_[run] = rec->size();
+      ++run;
+      cur_.next();
+    } while (n + run < max && cur_.valid());
+    out.ensure(n + run);
+    decode_run(layout_, recs_.data(), sizes_.data(), run, out, n);
+    n += run;
+  }
+  out.size = n;
+  return n;
 }
 
 TableCursor Catalog::open_cursor(const std::string& table) {
@@ -273,7 +332,7 @@ TableCursor Catalog::open_cursor(const std::string& table) {
   const std::size_t i = find_slot(p, table);
   check_that(i != npos, "no such table");
   const RawDesc d = read_desc(p, i);
-  return TableCursor(pool_, d.schema, d.heap_head, d.btree_root);
+  return TableCursor(pool_, d.schema, d.heap_head, d.btree_root, copy_pages_);
 }
 
 // ------------------------------------------------------------ indexes (Unit 11)
@@ -315,7 +374,7 @@ IndexCursor Catalog::open_index(const std::string& table, std::size_t column, Ch
   check_that(root != kNullPage, "no index on this column");
   const bool unique = column == 0;
   return IndexCursor(pool_, d.schema, d.heap_head, root, unique,
-                     rule ? rule : unique ? rightmost_child : leftmost_child);
+                     rule ? rule : unique ? rightmost_child : leftmost_child, copy_pages_);
 }
 
 std::uint64_t Catalog::count_index(const std::string& table, std::size_t column, Key lo,
@@ -341,11 +400,25 @@ std::optional<std::pair<Key, Key>> Catalog::index_bounds(const std::string& tabl
 }
 
 IndexCursor::IndexCursor(BufferPool& pool, Schema schema, PageId heap_head, PageId root,
-                         bool unique, ChildRule rule)
+                         bool unique, ChildRule rule, bool copy)
     : schema_(std::move(schema)),
+      layout_(schema_),
+      pool_(&pool),
       heap_(pool, heap_head, nullptr),
+      copy_(copy),
       tree_(pool, root, nullptr, unique),
       rule_(rule) {}
+
+void IndexCursor::fetch(RID rid, Row& out) {
+  if (copy_) {
+    out = decode(schema_, heap_.get(rid));
+    return;
+  }
+  if (!pin_.holds(rid.page)) pin_ = PagePin(*pool_, rid.page);
+  const auto rec = read_record(pin_.page(), rid.slot);
+  check_that(rec.has_value(), "index: no live record at this RID");
+  decode_into(layout_, *rec, out);
+}
 
 void IndexCursor::seek(Key lo, Key hi) {
   cur_ = tree_.seek(lo, rule_);
@@ -355,9 +428,49 @@ void IndexCursor::seek(Key lo, Key hi) {
 bool IndexCursor::next(Row& out) {
   if (!cur_ || !cur_->valid() || cur_->key() > hi_) return false;
   key_ = cur_->key();
-  out = decode(schema_, heap_.get(rid_decode(cur_->value())));
+  fetch(rid_decode(cur_->value()), out);
   cur_->next();
   return true;
+}
+
+// As TableCursor::fill does, a page at a time: the records of consecutive
+// entries on the pinned page -- every entry of a page, through the table's own
+// index, which is in the heap's order -- are collected and then decoded
+// together, column by column. Through a secondary index, whose next entry is
+// seldom on the same page, a run is mostly one record long.
+std::size_t IndexCursor::fill(Batch& out, std::size_t at, std::size_t max) {
+  std::size_t n = 0, run = 0;  // rows taken; the last `run` of them not yet decoded
+  std::size_t room = out.room();
+  const auto decode_the_run = [&] {
+    decode_run(layout_, recs_.data(), sizes_.data(), run, out, at + n - run);
+    run = 0;
+  };
+  for (; n < max && cur_ && cur_->valid() && cur_->key() <= hi_; cur_->next()) {
+    key_ = cur_->key();
+    const RID rid = rid_decode(cur_->value());
+    if (at + n == room) out.ensure(at + n + 1), room = out.room();
+    if (copy_) {
+      decode_to(layout_, heap_.get(rid), out, at + n++);
+      continue;
+    }
+    if (!pin_.holds(rid.page)) {
+      if (run) decode_the_run();  // while its page is still pinned
+      pin_ = PagePin(*pool_, rid.page);
+    }
+    const auto rec = read_record(pin_.page(), rid.slot);
+    check_that(rec.has_value(), "index: no live record at this RID");
+    if (run == recs_.size()) {
+      recs_.resize(recs_.empty() ? 64 : 2 * recs_.size());
+      sizes_.resize(recs_.size());
+    }
+    recs_[run] = rec->data();
+    sizes_[run] = rec->size();
+    ++run;
+    ++n;
+  }
+  if (run) decode_the_run();
+  out.size = at + n;
+  return n;
 }
 
 std::optional<Key> IndexCursor::max_key() const {

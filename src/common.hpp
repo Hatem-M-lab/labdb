@@ -42,9 +42,15 @@ inline void check_sys(bool ok, const char* what) {
   if (!ok) fail(std::string(what) + ": " + std::strerror(errno));
 }
 
-// For internal invariants.
+// For internal invariants. Unit 12: the check is inlined and the failure is
+// not. As first written, the message was built inside check_that itself, and
+// a function that builds two strings is one the compiler declines to inline:
+// every check, on every row, was a real call. Measured in Challenge 12.2.
+[[noreturn, gnu::cold, gnu::noinline]] inline void fail_invariant(const char* what) {
+  fail(std::string("invariant violated: ") + what);
+}
 inline void check_that(bool ok, const char* what) {
-  if (!ok) fail(std::string("invariant violated: ") + what);
+  if (!ok) [[unlikely]] fail_invariant(what);
 }
 
 // ---------------------------------------------------------------------------
